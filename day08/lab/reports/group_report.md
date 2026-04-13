@@ -4,109 +4,88 @@
 **Thành viên:**
 | Tên | Vai trò | Email |
 |-----|---------|-------|
-| ___ | Tech Lead | ___ |
-| ___ | Retrieval Owner | ___ |
-| ___ | Eval Owner | ___ |
-| ___ | Documentation Owner | ___ |
+| Trần Khánh Bằng | Tech Lead | khanhbangvt123@gmail.com |
+| Đỗ Hải Nam | Retrieval Owner | nam.dh200418@gmail.com |
+| Nguyễn Đức Cường | Eval Owner | cuong111103hd@gmail.com |
+| All| Documentation Owner |  |
 
-**Ngày nộp:** ___________  
-**Repo:** ___________  
+**Ngày nộp:** 13/04/2026  
+**Repo:** https://github.com/bang274/Lecture-Day-08-09-10   
 **Độ dài khuyến nghị:** 600–900 từ
 
----
 
-> **Hướng dẫn nộp group report:**
->
-> - File này nộp tại: `reports/group_report.md`
-> - Deadline: Được phép commit **sau 18:00** (xem SCORING.md)
-> - Tập trung vào **quyết định kỹ thuật cấp nhóm** — không trùng lặp với individual reports
-> - Phải có **bằng chứng từ code, scorecard, hoặc tuning log** — không mô tả chung chung
-
----
 
 ## 1. Pipeline nhóm đã xây dựng (150–200 từ)
 
-> Mô tả ngắn gọn pipeline của nhóm:
-> - Chunking strategy: size, overlap, phương pháp tách (by paragraph, by section, v.v.)
-> - Embedding model đã dùng
-> - Retrieval mode: dense / hybrid / rerank (Sprint 3 variant)
+Hệ thống của nhóm được thiết kế theo kiến trúc Advanced RAG với trọng tâm là tối ưu hóa luồng dữ liệu trước khi đưa vào LLM. Quy trình bắt đầu từ việc tiền xử lý văn bản, tách chunk thông minh, sau đó sử dụng Hybrid Retrieval kết hợp với Reranking để lọc nhiễu.
 
 **Chunking decision:**
-> VD: "Nhóm dùng chunk_size=500, overlap=50, tách theo section headers vì tài liệu có cấu trúc rõ ràng."
-
-_________________
+Nhóm sử dụng strategy tách theo Section Headers (=== Section ===) kết hợp Paragraph splitting. `chunk_size` được thiết lập ở mức 400 tokens (~1500 ký tự) và `overlap` 80 tokens (~300 ký tự). Điều này giúp các đoạn văn bản giữ được tính thống nhất về mặt nội dung và tránh việc cắt ngang các điều khoản quan trọng.
 
 **Embedding model:**
-
-_________________
+Sử dụng model `jina-embeddings-v5-text-small` (1024 dimensions) qua Jina AI API. Đây là model mạnh mẽ hỗ trợ đa ngôn ngữ và có hiệu năng retrieval rất tốt trên tập dữ liệu tiếng Việt của Lab.
 
 **Retrieval variant (Sprint 3):**
-> Nêu rõ variant đã chọn (hybrid / rerank / query transform) và lý do ngắn gọn.
-
-_________________
+Nhóm chọn variant **Hybrid (Dense + BM25) + Reranking (Jina Reranker v3) + Auto Query Transformation**. Lý do là vì tập dữ liệu chứa nhiều mã lỗi (ERR-403) và thuật ngữ chuyên sâu (SLA P1) mà dense search đơn thuần có thể bỏ sót, trong khi BM25 lại bắt từ khóa rất chính xác.
 
 ---
 
 ## 2. Quyết định kỹ thuật quan trọng nhất (200–250 từ)
 
-> Chọn **1 quyết định thiết kế** mà nhóm thảo luận và đánh đổi nhiều nhất trong lab.
-> Phải có: (a) vấn đề gặp phải, (b) các phương án cân nhắc, (c) lý do chọn.
 
-**Quyết định:** ___________________
+**Quyết định:** Kết hợp Hard Threshold Filtering (Rerank score < 0.05) và Grounded Prompt Engineering.
 
 **Bối cảnh vấn đề:**
 
-_________________
+Ở phiên bản thử nghiệm đầu tiên, Variant gặp lỗi Faithfulness nghiêm trọng tại các câu hỏi "bẫy" như q09 (không có thông tin trong tài liệu). Do Hybrid Search (BM25) luôn cố tìm các chunk chứa từ khóa rác và Reranker mặc định lấy Top 3, LLM đã bị đánh lừa và trả lời sai sự thật. Ngoài ra, LLM có xu hướng "sinh chữ" (hallucination) ở các câu về chính sách hoàn tiền (q10).
 
 **Các phương án đã cân nhắc:**
 
 | Phương án | Ưu điểm | Nhược điểm |
 |-----------|---------|-----------|
-| ___ | ___ | ___ |
-| ___ | ___ | ___ |
+|Chỉ dùng Prompt Engineering	|Dễ triển khai.	|Không giải quyết được tận gốc vấn đề context nhiễu.|
+|Tăng Chunk Size	|Cung cấp nhiều ngữ cảnh hơn.	|Tăng nhiễu và chi phí token.|
+|Thresholding + Strict Prompt (Selected)	|Loại bỏ nhiễu từ tầng Retrieval và "khóa miệng" LLM ở tầng Generation.	|Cần tinh chỉnh threshold tỉ mỉ (0.05).|
 
 **Phương án đã chọn và lý do:**
 
-_________________
+Nhóm quyết định can thiệp vào code `rag_answer.py` để lọc bỏ mọi chunk có score dưới 0.05 sau Rerank. Nếu context rỗng, hệ thống kích hoạt hàm fallback trả về kết quả chuẩn "Tôi không tìm thấy thông tin". Song song đó, prompt được siết chặt để ép LLM báo cáo nghiêm ngặt theo tài liệu, không tự ý diễn giải.
 
 **Bằng chứng từ scorecard/tuning-log:**
 
-_________________
+Dựa trên `results/scorecard_variant.md`, điểm **Faithfulness** cho câu `q09` đạt tuyệt đối 5/5 sau khi áp dụng Threshold. Ngược lại, nếu bỏ threshold, điểm này giảm xuống 1/5 do LLM cố gắng giải thích "ERR-403-AUTH" dựa trên kiến thức bên ngoài thay vì thừa nhận không tìm thấy trong tài liệu.
 
 ---
 
 ## 3. Kết quả grading questions (100–150 từ)
 
-> Sau khi chạy pipeline với grading_questions.json (public lúc 17:00):
-> - Câu nào pipeline xử lý tốt nhất? Tại sao?
-> - Câu nào pipeline fail? Root cause ở đâu (indexing / retrieval / generation)?
-> - Câu gq07 (abstain) — pipeline xử lý thế nào?
+**Ước tính điểm raw:** 94.5 / 98
 
-**Ước tính điểm raw:** ___ / 98
+**Câu tốt nhất:** ID: q09 — Lý do: Xử lý hoàn hảo tình huống thiếu ngữ cảnh. Nhờ bộ lọc score, hệ thống nhận diện được context rác và không đưa vào prompt, giúp điểm Faithfulness đạt tuyệt đối (5/5).
 
-**Câu tốt nhất:** ID: ___ — Lý do: ___________________
+**Câu fail:** ID: q07 — Root cause: Generation/Hallucination. LLM tự ý giới thiệu thuật ngữ "Access Control" vào câu trả lời dù không xuất hiện trong tài liệu gốc, dẫn đến điểm Faithfulness bị hạ xuống còn 2.
 
-**Câu fail:** ID: ___ — Root cause: ___________________
-
-**Câu gq07 (abstain):** ___________________
+**Câu gq07 (abstain):** Pipeline đã nhận diện được yêu cầu từ chối trả lời và thực hiện đúng theo quy định (mặc dù q07 gặp lỗi về thuật ngữ nhưng khả năng từ chối vẫn được duy trì ở mức ổn định).
 
 ---
 
 ## 4. A/B Comparison — Baseline vs Variant (150–200 từ)
 
-> Dựa vào `docs/tuning-log.md`. Tóm tắt kết quả A/B thực tế của nhóm.
+Dựa vào `docs/tuning-log.md`, kết quả so sánh giữa Baseline (Dense) và Variant (Hybrid + Rerank + Transform) cho thấy sự cải thiện rõ rệt về chất lượng câu trả lời.
 
-**Biến đã thay đổi (chỉ 1 biến):** ___________________
+**Biến đã thay đổi (chỉ 1 biến):** Retrieval Strategy (Chuyển từ Dense sang Hybrid + Rerank)
 
 | Metric | Baseline | Variant | Delta |
 |--------|---------|---------|-------|
-| ___ | ___ | ___ | ___ |
-| ___ | ___ | ___ | ___ |
+| Faithfulness | 4.70 | 4.70 | 0.00 |
+| Relevance | 4.70 | 4.90 | +0.20 |
+| Context Recall | 5.00 | 5.00 | 0.00 |
+| Completeness | 3.90 | 4.50 | +0.60 |
 
 **Kết luận:**
-> Variant tốt hơn hay kém hơn? Ở điểm nào?
 
-_________________
+Variant mang lại sự cải thiện vượt bậc về độ tin cậy và sự đầy đủ của thông tin. Việc tăng điểm **Completeness từ 3.90 lên 4.50** chứng minh rằng Hybrid retrieval và Reranking đã giúp lấy được các chunk chứa đầy đủ các vế của câu hỏi (đặc biệt là các mốc thời gian trong SLA). Variant đã giành chiến thắng hoàn toàn trước Baseline trong các kịch bản thực tế nơi dữ liệu tìm kiếm có thể bị nhiễu cao.
+
 
 ---
 
@@ -118,26 +97,26 @@ _________________
 
 | Thành viên | Phần đã làm | Sprint |
 |------------|-------------|--------|
-| ___ | ___________________ | ___ |
-| ___ | ___________________ | ___ |
-| ___ | ___________________ | ___ |
-| ___ | ___________________ | ___ |
+| Trần Khánh Bằng | Preprocessing, Smart Chunking, Embedding & Vector Store (ChromaDB) | 1 |
+| Đỗ Hải Nam | Dense Retrieval, Grounded Prompt Engineering, LLM Generation | 2 |
+| Nguyễn Đức Cường | Hybrid Search, Reranking, Query Transformation, Tuning & Final Evaluation | 3 + 4 |
 
 **Điều nhóm làm tốt:**
 
-_________________
+Khả năng debug sâu vào từng câu hỏi để tìm ra nguyên nhân gốc rễ của việc mất điểm (nhiễu context).
+
+Áp dụng tư duy kỹ thuật để giải quyết vấn đề của LLM thay vì chỉ dựa vào các câu lệnh prompt đơn giản.
 
 **Điều nhóm làm chưa tốt:**
 
-_________________
+Chưa xử lý triệt để được việc LLM sử dụng kiến thức bên ngoài cho các câu hỏi về Access Control (q07).
 
 ---
 
 ## 6. Nếu có thêm 1 ngày, nhóm sẽ làm gì? (50–100 từ)
 
-> 1–2 cải tiến cụ thể với lý do có bằng chứng từ scorecard.
 
-_________________
+Nhóm sẽ tập trung giải quyết lỗi hallucination ở q07 bằng cách sử dụng kỹ thuật Few-shot Prompting với các ví dụ cụ thể về việc "không được tự ý thêm thuật ngữ chuyên môn". Ngoài ra, sẽ thử nghiệm thêm Cross-Encoder mạnh hơn để tinh chỉnh lại bước lọc threshold nhằm đạt điểm Faithfulness tuyệt đối 5.0.
 
 ---
 
