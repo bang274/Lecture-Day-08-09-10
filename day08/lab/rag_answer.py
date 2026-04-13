@@ -41,45 +41,41 @@ LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
 # RETRIEVAL — DENSE (Vector Search)
 # =============================================================================
 
-def retrieve_dense(query: str, top_k: int = TOP_K_SEARCH) -> List[Dict[str, Any]]:
+def retrieve_dense(query: str, top_k: int = TOP_K_SEARCH, min_score: float = 0.45) -> List[Dict[str, Any]]:
     """
-    Dense retrieval: tìm kiếm theo embedding similarity trong ChromaDB.
+    Dense retrieval sử dụng Jina V5 với task=retrieval.query.
+    """
+    import chromadb
+    from index import get_embedding, CHROMA_DB_DIR
 
-    Args:
-        query: Câu hỏi của người dùng
-        top_k: Số chunk tối đa trả về
-
-    Returns:
-        List các dict, mỗi dict là một chunk với:
-          - "text": nội dung chunk
-          - "metadata": metadata (source, section, effective_date, ...)
-          - "score": cosine similarity score
-
-    TODO Sprint 2:
-    1. Embed query bằng cùng model đã dùng khi index (xem index.py)
-    2. Query ChromaDB với embedding đó
-    3. Trả về kết quả kèm score
-
-    Gợi ý:
-        import chromadb
-        from index import get_embedding, CHROMA_DB_DIR
-
-        client = chromadb.PersistentClient(path=str(CHROMA_DB_DIR))
+    client = chromadb.PersistentClient(path=str(CHROMA_DB_DIR))
+    try:
         collection = client.get_collection("rag_lab")
+    except Exception:
+        print("[Error] Collection 'rag_lab' chưa tồn tại.")
+        return []
 
-        query_embedding = get_embedding(query)
-        results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=top_k,
-            include=["documents", "metadatas", "distances"]
-        )
-        # Lưu ý: distances trong ChromaDB cosine = 1 - similarity
-        # Score = 1 - distance
-    """
-    raise NotImplementedError(
-        "TODO Sprint 2: Implement retrieve_dense().\n"
-        "Tham khảo comment trong hàm để biết cách query ChromaDB."
+    # Sử dụng task retrieval.query cho search
+    query_embedding = get_embedding(query, task="retrieval.query")
+    results = collection.query(
+        query_embeddings=[query_embedding],
+        n_results=top_k,
+        include=["documents", "metadatas", "distances"]
     )
+
+    formatted_results = []
+    if results["ids"] and results["ids"][0]:
+        for i in range(len(results["ids"][0])):
+            distance = results["distances"][0][i]
+            score = 1.0 - distance
+            
+            if score >= min_score:
+                formatted_results.append({
+                    "text": results["documents"][0][i],
+                    "metadata": results["metadatas"][0][i],
+                    "score": score
+                })
+    return formatted_results
 
 
 # =============================================================================
@@ -90,6 +86,24 @@ def retrieve_dense(query: str, top_k: int = TOP_K_SEARCH) -> List[Dict[str, Any]
 def retrieve_sparse(query: str, top_k: int = TOP_K_SEARCH) -> List[Dict[str, Any]]:
     """
     Sparse retrieval: tìm kiếm theo keyword (BM25).
+
+    Mạnh ở: exact term, mã lỗi, tên riêng (ví dụ: "ERR-403", "P1", "refund")
+    Hay hụt: câu hỏi paraphrase, đồng nghĩa
+
+    TODO Sprint 3 (nếu chọn hybrid):
+    1. Cài rank-bm25: pip install rank-bm25
+    2. Load tất cả chunks từ ChromaDB (hoặc rebuild từ docs)
+    3. Tokenize và tạo BM25Index
+    4. Query và trả về top_k kết quả
+
+    Gợi ý:
+        from rank_bm25 import BM25Okapi
+        corpus = [chunk["text"] for chunk in all_chunks]
+        tokenized_corpus = [doc.lower().split() for doc in corpus]
+        bm25 = BM25Okapi(tokenized_corpus)
+        tokenized_query = query.lower().split()
+        scores = bm25.get_scores(tokenized_query)
+        top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
     """
     import chromadb
     from rank_bm25 import BM25Okapi
@@ -177,39 +191,45 @@ def rerank(
     top_k: int = TOP_K_SELECT,
 ) -> List[Dict[str, Any]]:
     """
-    Rerank các candidate chunks bằng cross-encoder.
-
-    Cross-encoder: chấm lại "chunk nào thực sự trả lời câu hỏi này?"
-    MMR (Maximal Marginal Relevance): giữ relevance nhưng giảm trùng lặp
-
-    Funnel logic (từ slide):
-      Search rộng (top-20) → Rerank (top-6) → Select (top-3)
+    Sử dụng Jina Reranker v3 để sắp xếp lại các kết quả.
     """
+    import requests
+    
     if not candidates:
         return []
 
-    from sentence_transformers import CrossEncoder
-    
-    # 1. Load model CrossEncoder
-    # ms-marco-MiniLM-L-6-v2 là model phổ biến, nhẹ. 
-    # Nếu cần hỗ trợ tiếng Việt tốt hơn, có thể thử các model multilingual khác.
-    model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-    
-    # 2. Chuẩn bị cặp [query, text] để đưa vào model
-    pairs = [[query, chunk["text"]] for chunk in candidates]
-    
-    # 3. Dự đoán điểm số relevance
-    scores = model.predict(pairs)
-    
-    # 4. Sắp xếp lại candidates dựa trên score
-    ranked = sorted(zip(candidates, scores), key=lambda x: x[1], reverse=True)
-    
-    # 5. Cập nhật score mới vào metadata (optional nhưng tốt để debug)
-    for chunk, score in ranked:
-        chunk["rerank_score"] = float(score)
+    api_key = os.getenv("JINA_API_KEY")
+    if not api_key:
+        print("[Warning] Missing JINA_API_KEY. Skipping rerank.")
+        return candidates[:top_k]
 
-    # 6. Trả về top_k
-    return [chunk for chunk, _ in ranked[:top_k]]
+    url = "https://api.jina.ai/v1/rerank"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
+    }
+    
+    docs = [c["text"] for c in candidates]
+    data = {
+        "model": "jina-reranker-v3",
+        "query": query,
+        "documents": docs,
+        "top_n": top_k
+    }
+
+    response = requests.post(url, headers=headers, json=data)
+    if response.status_code == 200:
+        ranked_results = response.json()['results']
+        final_candidates = []
+        for r in ranked_results:
+            idx = r['index']
+            candidate = candidates[idx].copy()
+            candidate["rerank_score"] = r['relevance_score']
+            final_candidates.append(candidate)
+        return final_candidates
+    else:
+        print(f"[Error] Jina Rerank API Error: {response.status_code}")
+        return candidates[:top_k]
 
 
 # =============================================================================
@@ -280,64 +300,56 @@ def build_context_block(chunks: List[Dict[str, Any]]) -> str:
 
 def build_grounded_prompt(query: str, context_block: str) -> str:
     """
-    Xây dựng grounded prompt theo 4 quy tắc từ slide:
-    1. Evidence-only: Chỉ trả lời từ retrieved context
-    2. Abstain: Thiếu context thì nói không đủ dữ liệu
-    3. Citation: Gắn source/section khi có thể
-    4. Short, clear, stable: Output ngắn, rõ, nhất quán
-
-    TODO Sprint 2:
-    Đây là prompt baseline. Trong Sprint 3, bạn có thể:
-    - Thêm hướng dẫn về format output (JSON, bullet points)
-    - Thêm ngôn ngữ phản hồi (tiếng Việt vs tiếng Anh)
-    - Điều chỉnh tone phù hợp với use case (CS helpdesk, IT support)
+    Xây dựng prompt tối ưu cho Tiếng Việt và Kimi K2.
     """
-    prompt = f"""Answer only from the retrieved context below.
-If the context is insufficient to answer the question, say you do not know and do not make up information.
-Cite the source field (in brackets like [1]) when possible.
-Keep your answer short, clear, and factual.
-Respond in the same language as the question.
+    if not context_block.strip():
+        # Trường hợp không tìm thấy context đạt ngưỡng
+        return f"Câu hỏi: {query}\n\nHiện tại tôi không tìm thấy thông tin liên quan trong các tài liệu hướng dẫn. Hãy phản hồi rằng bạn không biết câu trả lời."
 
-Question: {query}
+    prompt = f"""Bạn là Chuyên gia hỗ trợ CNTT và Chăm sóc khách hàng chuyên nghiệp. 
+Hãy trả lời câu hỏi của người dùng dựa TRỰC TIẾP và DUY NHẤT vào phần 'Ngữ cảnh' dưới đây.
 
-Context:
+Quy tắc nghiêm ngặt:
+1. Nếu thông tin không có trong 'Ngữ cảnh', hãy trả lời: 'Tôi không tìm thấy thông tin này trong tài liệu hướng dẫn'. Tuyệt đối không tự bịa ra thông tin.
+2. Trích dẫn nguồn bằng cách đặt ID trong ngoặc vuông [ID] ngay sau câu hoặc đoạn văn sử dụng thông tin đó (ví dụ: [1], [2]).
+3. Giữ câu trả lời ngắn gọn, súc tích và đúng trọng tâm.
+4. Trả lời bằng Tiếng Việt.
+
+Câu hỏi: {query}
+
+Ngữ cảnh:
 {context_block}
 
-Answer:"""
+Trả lời:"""
     return prompt
 
 
 def call_llm(prompt: str) -> str:
     """
-    Gọi LLM để sinh câu trả lời.
+    Gọi LLM thông qua Groq API (Kimi K2 Instruct).
+    """
+    from openai import OpenAI
+    
+    api_key = os.getenv("GROQ_API_KEY")
+    # Sử dụng Groq endpoint hoặc Moonshot endpoint tùy thuộc vào cấu hình của user
+    base_url = os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1")
+    model_name = os.getenv("LLM_MODEL", "moonshotai/kimi-k2-instruct")
 
-    TODO Sprint 2:
-    Chọn một trong hai:
+    if not api_key:
+        return "[Error] Thiếu GROQ_API_KEY trong file .env"
 
-    Option A — OpenAI (cần OPENAI_API_KEY):
-        from openai import OpenAI
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    client = OpenAI(api_key=api_key, base_url=base_url)
+    
+    try:
         response = client.chat.completions.create(
-            model=LLM_MODEL,
+            model=model_name,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0,     # temperature=0 để output ổn định, dễ đánh giá
-            max_tokens=512,
+            temperature=0,
+            max_tokens=1024,
         )
         return response.choices[0].message.content
-
-    Option B — Google Gemini (cần GOOGLE_API_KEY):
-        import google.generativeai as genai
-        genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        response = model.generate_content(prompt)
-        return response.text
-
-    Lưu ý: Dùng temperature=0 hoặc thấp để output ổn định cho evaluation.
-    """
-    raise NotImplementedError(
-        "TODO Sprint 2: Implement call_llm().\n"
-        "Chọn Option A (OpenAI) hoặc Option B (Gemini) trong TODO comment."
-    )
+    except Exception as e:
+        return f"[Error] API Call failed: {str(e)}"
 
 
 def rag_answer(
