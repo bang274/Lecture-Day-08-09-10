@@ -64,8 +64,10 @@ def _call_eval_llm(prompt: str) -> Dict[str, Any]:
     Helper to call the LLM for evaluation and parse JSON output.
     Uses the provider and model configured in .env.
     """
-    provider = os.getenv("LLM_PROVIDER", "openai").lower()
-    model_name = os.getenv("LLM_MODEL", "gpt-4o-mini")
+    provider = "openai"
+    model_name = "mixtral-8x7b-32768"
+    api_key = os.getenv("GROQ_API_KEY")
+    base_url = os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1")
     
     try:
         if provider == "openai":
@@ -307,6 +309,9 @@ def run_scorecard(
 
         if verbose:
             print(f"\n[{question_id}] {query}")
+
+        import time
+        time.sleep(1) # Tránh rate limit của Groq
 
         # --- Gọi pipeline ---
         try:
