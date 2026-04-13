@@ -45,3 +45,4 @@ Thumbs.db
 reports/*.md
 !reports/individual/template.md
 *.log
+test_db/
