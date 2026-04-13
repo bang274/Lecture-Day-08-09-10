@@ -27,10 +27,10 @@ Hệ thống Advanced RAG được xây dựng để hỗ trợ trả lời các
 ### Tài liệu được index
 | File | Nguồn | Department | Số chunk |
 |------|-------|-----------|---------|
-| `access_control_sop.txt` | it/access-control-sop.md | IT Security | 11 |
-| `hr_leave_policy.txt` | hr/leave-policy-2026.pdf | HR | 11 |
-| `it_helpdesk_faq.txt` | support/helpdesk-faq.md | IT | 11 |
-| `policy_refund_v4.txt` | policy/refund-v4.pdf | CS | 8 |
+| `access_control_sop.txt` | it/access-control-sop.md | IT Security | 7 |
+| `hr_leave_policy.txt` | hr/leave-policy-2026.pdf | HR | 5 |
+| `it_helpdesk_faq.txt` | support/helpdesk-faq.md | IT | 6  |
+| `policy_refund_v4.txt` | policy/refund-v4.pdf | CS | 6 |
 | `sla_p1_2026.txt` | support/sla-p1-2026.pdf | IT | 5 |
 
 ### Quyết định chunking
