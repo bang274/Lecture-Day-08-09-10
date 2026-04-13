@@ -42,7 +42,9 @@ Thumbs.db
 .idea/
 
 # Reports/Logs
-reports/*.md
+# reports/*.md
 !reports/individual/template.md
 *.log
 test_db/
+docs/*.md
+
