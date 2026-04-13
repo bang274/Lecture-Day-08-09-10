@@ -41,10 +41,9 @@ LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
 # RETRIEVAL — DENSE (Vector Search)
 # =============================================================================
 
-def retrieve_dense(query: str, top_k: int = TOP_K_SEARCH, min_score: float = 0.3) -> List[Dict[str, Any]]:
+def retrieve_dense(query: str, top_k: int = TOP_K_SEARCH, min_score: float = 0.45) -> List[Dict[str, Any]]:
     """
-    Dense retrieval: tìm kiếm theo embedding similarity trong ChromaDB.
-    Có thêm ngưỡng score để lọc nhiễu.
+    Dense retrieval sử dụng Jina V5 với task=retrieval.query.
     """
     import chromadb
     from index import get_embedding, CHROMA_DB_DIR
@@ -53,10 +52,11 @@ def retrieve_dense(query: str, top_k: int = TOP_K_SEARCH, min_score: float = 0.3
     try:
         collection = client.get_collection("rag_lab")
     except Exception:
-        print("[Error] Không tìm thấy collection 'rag_lab'. Hãy chạy index.py trước.")
+        print("[Error] Collection 'rag_lab' chưa tồn tại.")
         return []
 
-    query_embedding = get_embedding(query)
+    # Sử dụng task retrieval.query cho search
+    query_embedding = get_embedding(query, task="retrieval.query")
     results = collection.query(
         query_embeddings=[query_embedding],
         n_results=top_k,
@@ -67,17 +67,14 @@ def retrieve_dense(query: str, top_k: int = TOP_K_SEARCH, min_score: float = 0.3
     if results["ids"] and results["ids"][0]:
         for i in range(len(results["ids"][0])):
             distance = results["distances"][0][i]
-            score = 1.0 - distance  # ChromaDB cosine distance = 1 - similarity
+            score = 1.0 - distance
             
-            if score < min_score:
-                continue
-                
-            formatted_results.append({
-                "text": results["documents"][0][i],
-                "metadata": results["metadatas"][0][i],
-                "score": score
-            })
-
+            if score >= min_score:
+                formatted_results.append({
+                    "text": results["documents"][0][i],
+                    "metadata": results["metadatas"][0][i],
+                    "score": score
+                })
     return formatted_results
 
 
@@ -89,6 +86,24 @@ def retrieve_dense(query: str, top_k: int = TOP_K_SEARCH, min_score: float = 0.3
 def retrieve_sparse(query: str, top_k: int = TOP_K_SEARCH) -> List[Dict[str, Any]]:
     """
     Sparse retrieval: tìm kiếm theo keyword (BM25).
+
+    Mạnh ở: exact term, mã lỗi, tên riêng (ví dụ: "ERR-403", "P1", "refund")
+    Hay hụt: câu hỏi paraphrase, đồng nghĩa
+
+    TODO Sprint 3 (nếu chọn hybrid):
+    1. Cài rank-bm25: pip install rank-bm25
+    2. Load tất cả chunks từ ChromaDB (hoặc rebuild từ docs)
+    3. Tokenize và tạo BM25Index
+    4. Query và trả về top_k kết quả
+
+    Gợi ý:
+        from rank_bm25 import BM25Okapi
+        corpus = [chunk["text"] for chunk in all_chunks]
+        tokenized_corpus = [doc.lower().split() for doc in corpus]
+        bm25 = BM25Okapi(tokenized_corpus)
+        tokenized_query = query.lower().split()
+        scores = bm25.get_scores(tokenized_query)
+        top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
     """
     import chromadb
     from rank_bm25 import BM25Okapi
@@ -279,56 +294,56 @@ def build_context_block(chunks: List[Dict[str, Any]]) -> str:
 
 def build_grounded_prompt(query: str, context_block: str) -> str:
     """
-    Xây dựng grounded prompt tối ưu cho tiếng Việt.
+    Xây dựng prompt tối ưu cho Tiếng Việt và Kimi K2.
     """
     if not context_block.strip():
-        return f"Câu hỏi: {query}\n\nKhông có ngữ cảnh nào được tìm thấy. Hãy trả lời rằng bạn không biết thông tin này."
+        # Trường hợp không tìm thấy context đạt ngưỡng
+        return f"Câu hỏi: {query}\n\nHiện tại tôi không tìm thấy thông tin liên quan trong các tài liệu hướng dẫn. Hãy phản hồi rằng bạn không biết câu trả lời."
 
-    prompt = f"""Dựa trên các đoạn văn bản trích dẫn dưới đây, hãy trả lời câu hỏi của người dùng.
+    prompt = f"""Bạn là Chuyên gia hỗ trợ CNTT và Chăm sóc khách hàng chuyên nghiệp. 
+Hãy trả lời câu hỏi của người dùng dựa TRỰC TIẾP và DUY NHẤT vào phần 'Ngữ cảnh' dưới đây.
 
-Quy tắc bắt buộc:
-1. Chỉ dùng thông tin có trong phần 'Ngữ cảnh'. Không tự ý thêm thông tin bên ngoài.
-2. Nếu không tìm thấy thông tin để trả lời, hãy nói thẳng là bạn không biết (ví dụ: 'Tôi không tìm thấy thông tin này trong tài liệu hướng dẫn').
-3. Luôn trích dẫn nguồn bằng số thứ tự trong ngoặc vuông, ví dụ [1], [2] ở cuối câu hoặc đoạn có sử dụng thông tin đó.
-4. Trả lời bằng tiếng Việt, phong cách chuyên nghiệp, ngắn gọn.
+Quy tắc nghiêm ngặt:
+1. Nếu thông tin không có trong 'Ngữ cảnh', hãy trả lời: 'Tôi không tìm thấy thông tin này trong tài liệu hướng dẫn'. Tuyệt đối không tự bịa ra thông tin.
+2. Trích dẫn nguồn bằng cách đặt ID trong ngoặc vuông [ID] ngay sau câu hoặc đoạn văn sử dụng thông tin đó (ví dụ: [1], [2]).
+3. Giữ câu trả lời ngắn gọn, súc tích và đúng trọng tâm.
+4. Trả lời bằng Tiếng Việt.
 
 Câu hỏi: {query}
 
 Ngữ cảnh:
 {context_block}
 
-Hãy trả lời một cách chính xác:"""
+Trả lời:"""
     return prompt
 
 
 def call_llm(prompt: str) -> str:
     """
-    Gọi LLM Kimi K2 để sinh câu trả lời.
+    Gọi LLM thông qua Groq API (Kimi K2 Instruct).
     """
     from openai import OpenAI
     
-    api_key = os.getenv("KIMI_API_KEY")
-    base_url = os.getenv("KIMI_BASE_URL", "https://api.moonshot.ai/v1")
-    model_name = os.getenv("LLM_MODEL", "kimi-k2-instruct")
+    api_key = os.getenv("GROQ_API_KEY")
+    # Sử dụng Groq endpoint hoặc Moonshot endpoint tùy thuộc vào cấu hình của user
+    base_url = os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1")
+    model_name = os.getenv("LLM_MODEL", "moonshotai/kimi-k2-instruct")
 
     if not api_key:
-        return "Lỗi: Thiếu KIMI_API_KEY trong file .env"
+        return "[Error] Thiếu GROQ_API_KEY trong file .env"
 
     client = OpenAI(api_key=api_key, base_url=base_url)
     
     try:
         response = client.chat.completions.create(
             model=model_name,
-            messages=[
-                {"role": "system", "content": "Bạn là trợ lý ảo hỗ trợ CS và IT Helpdesk. Hãy trả lời ngắn gọn, trung thực và chỉ dựa trên ngữ cảnh được cung cấp."},
-                {"role": "user", "content": prompt}
-            ],
+            messages=[{"role": "user", "content": prompt}],
             temperature=0,
             max_tokens=1024,
         )
         return response.choices[0].message.content
     except Exception as e:
-        return f"Lỗi khi gọi API Kimi: {str(e)}"
+        return f"[Error] API Call failed: {str(e)}"
 
 
 def rag_answer(
