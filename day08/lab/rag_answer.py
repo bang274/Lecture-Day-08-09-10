@@ -90,29 +90,40 @@ def retrieve_dense(query: str, top_k: int = TOP_K_SEARCH) -> List[Dict[str, Any]
 def retrieve_sparse(query: str, top_k: int = TOP_K_SEARCH) -> List[Dict[str, Any]]:
     """
     Sparse retrieval: tìm kiếm theo keyword (BM25).
-
-    Mạnh ở: exact term, mã lỗi, tên riêng (ví dụ: "ERR-403", "P1", "refund")
-    Hay hụt: câu hỏi paraphrase, đồng nghĩa
-
-    TODO Sprint 3 (nếu chọn hybrid):
-    1. Cài rank_bm25: pip install rank-bm25
-    2. Load tất cả chunks từ ChromaDB (hoặc rebuild từ docs)
-    3. Tokenize và tạo BM25Index
-    4. Query và trả về top_k kết quả
-
-    Gợi ý:
-        from rank_bm25 import BM25Okapi
-        corpus = [chunk["text"] for chunk in all_chunks]
-        tokenized_corpus = [doc.lower().split() for doc in corpus]
-        bm25 = BM25Okapi(tokenized_corpus)
-        tokenized_query = query.lower().split()
-        scores = bm25.get_scores(tokenized_query)
-        top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
     """
-    # TODO Sprint 3: Implement BM25 search
-    # Tạm thời return empty list
-    print("[retrieve_sparse] Chưa implement — Sprint 3")
-    return []
+    import chromadb
+    from rank_bm25 import BM25Okapi
+    from index import CHROMA_DB_DIR
+
+    # 1. Load tất cả chunks từ ChromaDB
+    client = chromadb.PersistentClient(path=str(CHROMA_DB_DIR))
+    collection = client.get_collection("rag_lab")
+    
+    results = collection.get(include=["documents", "metadatas"])
+    all_docs = results["documents"]
+    all_metadatas = results["metadatas"]
+
+    if not all_docs:
+        return []
+
+    # 2. Tokenize và tạo BM25Index
+    tokenized_corpus = [doc.lower().split() for doc in all_docs]
+    bm25 = BM25Okapi(tokenized_corpus)
+
+    # 3. Query và trả về top_k kết quả
+    tokenized_query = query.lower().split()
+    scores = bm25.get_scores(tokenized_query)
+    
+    top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
+
+    return [
+        {
+            "text": all_docs[i],
+            "metadata": all_metadatas[i],
+            "score": float(scores[i])
+        }
+        for i in top_indices if scores[i] > 0
+    ]
 
 
 # =============================================================================
@@ -127,31 +138,32 @@ def retrieve_hybrid(
 ) -> List[Dict[str, Any]]:
     """
     Hybrid retrieval: kết hợp dense và sparse bằng Reciprocal Rank Fusion (RRF).
-
-    Mạnh ở: giữ được cả nghĩa (dense) lẫn keyword chính xác (sparse)
-    Phù hợp khi: corpus lẫn lộn ngôn ngữ tự nhiên và tên riêng/mã lỗi/điều khoản
-
-    Args:
-        dense_weight: Trọng số cho dense score (0-1)
-        sparse_weight: Trọng số cho sparse score (0-1)
-
-    TODO Sprint 3 (nếu chọn hybrid):
-    1. Chạy retrieve_dense() → dense_results
-    2. Chạy retrieve_sparse() → sparse_results
-    3. Merge bằng RRF:
-       RRF_score(doc) = dense_weight * (1 / (60 + dense_rank)) +
-                        sparse_weight * (1 / (60 + sparse_rank))
-       60 là hằng số RRF tiêu chuẩn
-    4. Sort theo RRF score giảm dần, trả về top_k
-
-    Khi nào dùng hybrid (từ slide):
-    - Corpus có cả câu tự nhiên VÀ tên riêng, mã lỗi, điều khoản
-    - Query như "Approval Matrix" khi doc đổi tên thành "Access Control SOP"
     """
-    # TODO Sprint 3: Implement hybrid RRF
-    # Tạm thời fallback về dense
-    print("[retrieve_hybrid] Chưa implement RRF — fallback về dense")
-    return retrieve_dense(query, top_k)
+    # 1. Chạy dense và sparse với k lớn hơn để merge
+    dense_results = retrieve_dense(query, top_k=top_k * 2)
+    sparse_results = retrieve_sparse(query, top_k=top_k * 2)
+
+    # 2. Merge bằng RRF
+    rrf_scores = {}
+    doc_map = {}
+
+    for rank, doc in enumerate(dense_results):
+        text = doc["text"]
+        rrf_scores[text] = rrf_scores.get(text, 0) + dense_weight * (1.0 / (60 + rank))
+        doc_map[text] = doc["metadata"]
+
+    for rank, doc in enumerate(sparse_results):
+        text = doc["text"]
+        rrf_scores[text] = rrf_scores.get(text, 0) + sparse_weight * (1.0 / (60 + rank))
+        doc_map[text] = doc["metadata"]
+
+    # 3. Sort và trả về top_k
+    sorted_docs = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
+    
+    return [
+        {"text": text, "metadata": doc_map[text], "score": score}
+        for text, score in sorted_docs
+    ]
 
 
 # =============================================================================
