@@ -41,45 +41,44 @@ LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
 # RETRIEVAL — DENSE (Vector Search)
 # =============================================================================
 
-def retrieve_dense(query: str, top_k: int = TOP_K_SEARCH) -> List[Dict[str, Any]]:
+def retrieve_dense(query: str, top_k: int = TOP_K_SEARCH, min_score: float = 0.3) -> List[Dict[str, Any]]:
     """
     Dense retrieval: tìm kiếm theo embedding similarity trong ChromaDB.
-
-    Args:
-        query: Câu hỏi của người dùng
-        top_k: Số chunk tối đa trả về
-
-    Returns:
-        List các dict, mỗi dict là một chunk với:
-          - "text": nội dung chunk
-          - "metadata": metadata (source, section, effective_date, ...)
-          - "score": cosine similarity score
-
-    TODO Sprint 2:
-    1. Embed query bằng cùng model đã dùng khi index (xem index.py)
-    2. Query ChromaDB với embedding đó
-    3. Trả về kết quả kèm score
-
-    Gợi ý:
-        import chromadb
-        from index import get_embedding, CHROMA_DB_DIR
-
-        client = chromadb.PersistentClient(path=str(CHROMA_DB_DIR))
-        collection = client.get_collection("rag_lab")
-
-        query_embedding = get_embedding(query)
-        results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=top_k,
-            include=["documents", "metadatas", "distances"]
-        )
-        # Lưu ý: distances trong ChromaDB cosine = 1 - similarity
-        # Score = 1 - distance
+    Có thêm ngưỡng score để lọc nhiễu.
     """
-    raise NotImplementedError(
-        "TODO Sprint 2: Implement retrieve_dense().\n"
-        "Tham khảo comment trong hàm để biết cách query ChromaDB."
+    import chromadb
+    from index import get_embedding, CHROMA_DB_DIR
+
+    client = chromadb.PersistentClient(path=str(CHROMA_DB_DIR))
+    try:
+        collection = client.get_collection("rag_lab")
+    except Exception:
+        print("[Error] Không tìm thấy collection 'rag_lab'. Hãy chạy index.py trước.")
+        return []
+
+    query_embedding = get_embedding(query)
+    results = collection.query(
+        query_embeddings=[query_embedding],
+        n_results=top_k,
+        include=["documents", "metadatas", "distances"]
     )
+
+    formatted_results = []
+    if results["ids"] and results["ids"][0]:
+        for i in range(len(results["ids"][0])):
+            distance = results["distances"][0][i]
+            score = 1.0 - distance  # ChromaDB cosine distance = 1 - similarity
+            
+            if score < min_score:
+                continue
+                
+            formatted_results.append({
+                "text": results["documents"][0][i],
+                "metadata": results["metadatas"][0][i],
+                "score": score
+            })
+
+    return formatted_results
 
 
 # =============================================================================
@@ -280,64 +279,56 @@ def build_context_block(chunks: List[Dict[str, Any]]) -> str:
 
 def build_grounded_prompt(query: str, context_block: str) -> str:
     """
-    Xây dựng grounded prompt theo 4 quy tắc từ slide:
-    1. Evidence-only: Chỉ trả lời từ retrieved context
-    2. Abstain: Thiếu context thì nói không đủ dữ liệu
-    3. Citation: Gắn source/section khi có thể
-    4. Short, clear, stable: Output ngắn, rõ, nhất quán
-
-    TODO Sprint 2:
-    Đây là prompt baseline. Trong Sprint 3, bạn có thể:
-    - Thêm hướng dẫn về format output (JSON, bullet points)
-    - Thêm ngôn ngữ phản hồi (tiếng Việt vs tiếng Anh)
-    - Điều chỉnh tone phù hợp với use case (CS helpdesk, IT support)
+    Xây dựng grounded prompt tối ưu cho tiếng Việt.
     """
-    prompt = f"""Answer only from the retrieved context below.
-If the context is insufficient to answer the question, say you do not know and do not make up information.
-Cite the source field (in brackets like [1]) when possible.
-Keep your answer short, clear, and factual.
-Respond in the same language as the question.
+    if not context_block.strip():
+        return f"Câu hỏi: {query}\n\nKhông có ngữ cảnh nào được tìm thấy. Hãy trả lời rằng bạn không biết thông tin này."
 
-Question: {query}
+    prompt = f"""Dựa trên các đoạn văn bản trích dẫn dưới đây, hãy trả lời câu hỏi của người dùng.
 
-Context:
+Quy tắc bắt buộc:
+1. Chỉ dùng thông tin có trong phần 'Ngữ cảnh'. Không tự ý thêm thông tin bên ngoài.
+2. Nếu không tìm thấy thông tin để trả lời, hãy nói thẳng là bạn không biết (ví dụ: 'Tôi không tìm thấy thông tin này trong tài liệu hướng dẫn').
+3. Luôn trích dẫn nguồn bằng số thứ tự trong ngoặc vuông, ví dụ [1], [2] ở cuối câu hoặc đoạn có sử dụng thông tin đó.
+4. Trả lời bằng tiếng Việt, phong cách chuyên nghiệp, ngắn gọn.
+
+Câu hỏi: {query}
+
+Ngữ cảnh:
 {context_block}
 
-Answer:"""
+Hãy trả lời một cách chính xác:"""
     return prompt
 
 
 def call_llm(prompt: str) -> str:
     """
-    Gọi LLM để sinh câu trả lời.
+    Gọi LLM Kimi K2 để sinh câu trả lời.
+    """
+    from openai import OpenAI
+    
+    api_key = os.getenv("KIMI_API_KEY")
+    base_url = os.getenv("KIMI_BASE_URL", "https://api.moonshot.ai/v1")
+    model_name = os.getenv("LLM_MODEL", "kimi-k2-instruct")
 
-    TODO Sprint 2:
-    Chọn một trong hai:
+    if not api_key:
+        return "Lỗi: Thiếu KIMI_API_KEY trong file .env"
 
-    Option A — OpenAI (cần OPENAI_API_KEY):
-        from openai import OpenAI
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    client = OpenAI(api_key=api_key, base_url=base_url)
+    
+    try:
         response = client.chat.completions.create(
-            model=LLM_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,     # temperature=0 để output ổn định, dễ đánh giá
-            max_tokens=512,
+            model=model_name,
+            messages=[
+                {"role": "system", "content": "Bạn là trợ lý ảo hỗ trợ CS và IT Helpdesk. Hãy trả lời ngắn gọn, trung thực và chỉ dựa trên ngữ cảnh được cung cấp."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0,
+            max_tokens=1024,
         )
         return response.choices[0].message.content
-
-    Option B — Google Gemini (cần GOOGLE_API_KEY):
-        import google.generativeai as genai
-        genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        response = model.generate_content(prompt)
-        return response.text
-
-    Lưu ý: Dùng temperature=0 hoặc thấp để output ổn định cho evaluation.
-    """
-    raise NotImplementedError(
-        "TODO Sprint 2: Implement call_llm().\n"
-        "Chọn Option A (OpenAI) hoặc Option B (Gemini) trong TODO comment."
-    )
+    except Exception as e:
+        return f"Lỗi khi gọi API Kimi: {str(e)}"
 
 
 def rag_answer(
