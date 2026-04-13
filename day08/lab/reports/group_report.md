@@ -122,4 +122,3 @@ Nhóm sẽ tập trung giải quyết lỗi hallucination ở q07 bằng cách s
 
 *File này lưu tại: `reports/group_report.md`*  
 *Commit sau 18:00 được phép theo SCORING.md*
-
