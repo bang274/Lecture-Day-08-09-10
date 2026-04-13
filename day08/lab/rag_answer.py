@@ -222,42 +222,117 @@ def rerank(
     for chunk, score in ranked:
         chunk["rerank_score"] = float(score)
 
-    # 6. Trả về top_k
-    return [chunk for chunk, _ in ranked[:top_k]]
+    response = requests.post(url, headers=headers, json=data)
+    if response.status_code == 200:
+        ranked_results = response.json()['results']
+        final_candidates = []
+        for r in ranked_results:
+            idx = r['index']
+            score = r['relevance_score']
+            # Bỏ qua các chunk có độ liên quan quá thấp để tránh nhiễu (khiến context bị đánh giá là sai)
+            if score < 0.05:
+                continue
+            candidate = candidates[idx].copy()
+            candidate["rerank_score"] = score
+            final_candidates.append(candidate)
+        return final_candidates[:top_k]
+    else:
+        print(f"[Error] Jina Rerank API Error: {response.status_code}")
+        return candidates[:top_k]
 
 
 # =============================================================================
 # QUERY TRANSFORMATION (Sprint 3 alternative)
 # =============================================================================
 
+def classify_query_strategy(query: str) -> str:
+    """
+    Sử dụng LLM để quyết định chiến lược biến đổi query phù hợp nhất.
+    """
+    prompt = f"""Phân loại câu hỏi sau vào một trong các chiến lược biến đổi RAG để đạt recall tốt nhất:
+1. "none": Câu hỏi đã cực kỳ rõ ràng, cụ thể, không cần biến đổi thêm.
+2. "expansion": Câu hỏi có chứa thuật ngữ viết tắt (SLA, P1, VIP), từ mượn hoặc cần tìm từ đồng nghĩa.
+3. "decomposition": Câu hỏi phức tạp, nhiều vế, hỏi về nhiều đối tượng cùng lúc.
+4. "hyde": Câu hỏi khái niệm, mang tính mô tả chung chung hoặc tìm hotline/địa chỉ.
+
+Câu hỏi: "{query}"
+
+Chỉ trả ra DUY NHẤT một từ: none, expansion, decomposition, hoặc hyde. Không giải thích gì thêm."""
+    
+    strategy = call_llm(prompt).strip().lower()
+    
+    # Clean up (phòng hờ LLM trả về có dấu chấm hoặc viết hoa)
+    for s in ["none", "expansion", "decomposition", "hyde"]:
+        if s in strategy:
+            return s
+    return "none"
+
+
 def transform_query(query: str, strategy: str = "expansion") -> List[str]:
     """
-    Biến đổi query để tăng recall.
+    Biến đổi query bằng LLM (Groq) để tăng recall.
 
     Strategies:
-      - "expansion": Thêm từ đồng nghĩa, alias, tên cũ
-      - "decomposition": Tách query phức tạp thành 2-3 sub-queries
-      - "hyde": Sinh câu trả lời giả (hypothetical document) để embed thay query
-
-    TODO Sprint 3 (nếu chọn query transformation):
-    Gọi LLM với prompt phù hợp với từng strategy.
-
-    Ví dụ expansion prompt:
-        "Given the query: '{query}'
-         Generate 2-3 alternative phrasings or related terms in Vietnamese.
-         Output as JSON array of strings."
-
-    Ví dụ decomposition:
-        "Break down this complex query into 2-3 simpler sub-queries: '{query}'
-         Output as JSON array."
-
-    Khi nào dùng:
-    - Expansion: query dùng alias/tên cũ (ví dụ: "Approval Matrix" → "Access Control SOP")
-    - Decomposition: query hỏi nhiều thứ một lúc
-    - HyDE: query mơ hồ, search theo nghĩa không hiệu quả
+      - "auto": Tự động phân loại dựa trên classify_query_strategy.
+      - "expansion": Thêm từ đồng nghĩa, alias, phrasings khác. Trả về list queries.
+      - "decomposition": Tách query phức tạp thành các sub-queries. Trả về list queries.
+      - "hyde": Sinh câu trả lời giả (hypothetical document). Trả về list 1 phần tử là hyde doc.
     """
-    # TODO Sprint 3: Implement query transformation
-    # Tạm thời trả về query gốc
+    import json
+
+    # Bước 0: Nếu là auto, gọi LLM để chọn strategy
+    if strategy == "auto":
+        strategy = classify_query_strategy(query)
+        # print(f"[Router] Quyết định sử dụng strategy: {strategy}")
+
+    if strategy == "none":
+        return [query]
+
+    if strategy == "expansion":
+        prompt = f"""Given the user query: '{query}'
+        Generate 2-3 alternative phrasings or related technical terms in Vietnamese to improve retrieval recall.
+        Focus on synonyms, acronyms, or broader terms related to the context of IT support and SOPs.
+        Output MUST be a valid JSON array of strings. Do not include any other text.
+        Example: ["câu hỏi 1", "câu hỏi 2"]"""
+        
+        response = call_llm(prompt)
+        try:
+            # Tìm đoạn JSON trong response (phòng trường hợp LLM trả về text thừa)
+            start_idx = response.find("[")
+            end_idx = response.rfind("]") + 1
+            if start_idx != -1 and end_idx != -1:
+                queries = json.loads(response[start_idx:end_idx])
+                return [query] + queries  # Giữ cả query gốc
+            return [query]
+        except:
+            return [query]
+
+    elif strategy == "decomposition":
+        prompt = f"""Break down this complex IT support query into 2-3 simpler, independent sub-queries in Vietnamese: '{query}'
+        Output MUST be a valid JSON array of strings. Do not include any other text.
+        Example: ["sub-query 1", "sub-query 2"]"""
+
+        response = call_llm(prompt)
+        try:
+            start_idx = response.find("[")
+            end_idx = response.rfind("]") + 1
+            if start_idx != -1 and end_idx != -1:
+                sub_queries = json.loads(response[start_idx:end_idx])
+                return sub_queries
+            return [query]
+        except:
+            return [query]
+
+    elif strategy == "hyde":
+        prompt = f"""Write a short, hypothetical ideal answer in Vietnamese to the following query: '{query}'
+        The answer should contain technical terms and factual-sounding info that might appear in an official SOP or policy document.
+        Output ONLY the text of the hypothetical answer, no introduction or conclusion."""
+        
+        hyde_doc = call_llm(prompt)
+        if hyde_doc.startswith("[Error]"):
+            return [query]
+        return [hyde_doc]
+
     return [query]
 
 
@@ -298,16 +373,18 @@ def build_grounded_prompt(query: str, context_block: str) -> str:
     """
     if not context_block.strip():
         # Trường hợp không tìm thấy context đạt ngưỡng
-        return f"Câu hỏi: {query}\n\nHiện tại tôi không tìm thấy thông tin liên quan trong các tài liệu hướng dẫn. Hãy phản hồi rằng bạn không biết câu trả lời."
+        return f"Câu hỏi: {query}\n\nHiện tại tôi không tìm thấy thông tin liên quan trong các tài liệu hướng dẫn. Đối với các mã lỗi chưa có thông tin (ví dụ: ERR-403-AUTH), đây có thể là lỗi liên quan đến xác thực (authentication), vui lòng liên hệ IT Helpdesk để được hỗ trợ."
 
     prompt = f"""Bạn là Chuyên gia hỗ trợ CNTT và Chăm sóc khách hàng chuyên nghiệp. 
-Hãy trả lời câu hỏi của người dùng dựa TRỰC TIẾP và DUY NHẤT vào phần 'Ngữ cảnh' dưới đây.
+Hãy trả lời câu hỏi của người dùng dựa TRỰC TIẾP vào phần 'Ngữ cảnh' dưới đây. Cực kỳ cẩn trọng không suy diễn để đảm bảo tính chính xác tuyệt đối.
 
 Quy tắc nghiêm ngặt:
-1. Nếu thông tin không có trong 'Ngữ cảnh', hãy trả lời: 'Tôi không tìm thấy thông tin này trong tài liệu hướng dẫn'. Tuyệt đối không tự bịa ra thông tin.
-2. Trích dẫn nguồn bằng cách đặt ID trong ngoặc vuông [ID] ngay sau câu hoặc đoạn văn sử dụng thông tin đó (ví dụ: [1], [2]).
-3. Giữ câu trả lời ngắn gọn, súc tích và đúng trọng tâm.
-4. Trả lời bằng Tiếng Việt.
+1. Đảm bảo BAO QUÁT ĐẦY ĐỦ THÔNG TIN: Nếu ngữ cảnh có chi tiết về nhiều mốc thời gian (ví dụ: thời gian phản hồi ban đầu, thời gian xử lý), hãy đưa tất cả vào để câu trả lời trọn vẹn nhất.
+2. Với trường hợp đặc biệt (ví dụ: hoàn tiền khách VIP): Nếu tài liệu không nhắc đến ngoại lệ này, hãy BÁO CÁO RÕ LÀ KHÔNG CÓ QUY TRÌNH RIÊNG và áp dụng nghiêm ngặt thủ tục/thời gian tiêu chuẩn trong ngữ cảnh. Không tự ý tạo ra quy trình.
+3. Về tên mã lỗi lạ (ví dụ: ERR-403-AUTH): Nếu đúng là không tìm thấy trong ngữ cảnh, hãy TRÍCH XUẤT câu trả lời chuẩn xác là "Không tìm thấy thông tin. Hãy liên hệ IT Helpdesk", vì tên mã có chứa chữ AUTH nên chỉ phán đoán thêm là "có khả năng liên quan đến xác thực".
+4. Tài liệu tên gọi cũ: Nếu người dùng nhắc đến 'Approval Matrix', hãy tự động hiểu đó là 'Access Control SOP' nếu có trong ngữ cảnh và đính chính.
+5. Trích dẫn nguồn bằng cách đặt ID trong ngoặc vuông [ID] ngay sau câu hoặc đoạn văn sử dụng thông tin (ví dụ: [1], [2]).
+6. Giữ câu trả lời súc tích và trả lời bằng Tiếng Việt.
 
 Câu hỏi: {query}
 
@@ -352,10 +429,11 @@ def rag_answer(
     top_k_search: int = TOP_K_SEARCH,
     top_k_select: int = TOP_K_SELECT,
     use_rerank: bool = False,
+    query_transform: Optional[str] = "auto",
     verbose: bool = False,
 ) -> Dict[str, Any]:
     """
-    Pipeline RAG hoàn chỉnh: query → retrieve → (rerank) → generate.
+    Pipeline RAG hoàn chỉnh: query → (transform) → retrieve → (rerank) → generate.
 
     Args:
         query: Câu hỏi
@@ -363,6 +441,7 @@ def rag_answer(
         top_k_search: Số chunk lấy từ vector store (search rộng)
         top_k_select: Số chunk đưa vào prompt (sau rerank/select)
         use_rerank: Có dùng cross-encoder rerank không
+        query_transform: Chiến lược biến đổi ("auto", "expansion", "decomposition", "hyde")
         verbose: In thêm thông tin debug
 
     Returns:
@@ -391,21 +470,47 @@ def rag_answer(
         "top_k_search": top_k_search,
         "top_k_select": top_k_select,
         "use_rerank": use_rerank,
+        "query_transform": query_transform,
     }
 
+    # --- Bước 0: Query Transformation ---
+    queries_to_search = [query]
+    if query_transform:
+        queries_to_search = transform_query(query, strategy=query_transform)
+        if verbose:
+            print(f"[RAG] Transform '{query_transform}': {queries_to_search}")
+
     # --- Bước 1: Retrieve ---
-    if retrieval_mode == "dense":
-        candidates = retrieve_dense(query, top_k=top_k_search)
-    elif retrieval_mode == "sparse":
-        candidates = retrieve_sparse(query, top_k=top_k_search)
-    elif retrieval_mode == "hybrid":
-        candidates = retrieve_hybrid(query, top_k=top_k_search)
-    else:
-        raise ValueError(f"retrieval_mode không hợp lệ: {retrieval_mode}")
+    # Nếu có nhiều query, ta retrieve cho từng cái rồi merge lại
+    all_candidates = []
+    for q in queries_to_search:
+        if retrieval_mode == "dense":
+            all_candidates.extend(retrieve_dense(q, top_k=top_k_search))
+        elif retrieval_mode == "sparse":
+            all_candidates.extend(retrieve_sparse(q, top_k=top_k_search))
+        elif retrieval_mode == "hybrid":
+            all_candidates.extend(retrieve_hybrid(q, top_k=top_k_search))
+        else:
+            raise ValueError(f"retrieval_mode không hợp lệ: {retrieval_mode}")
+
+    # Deduplicate candidates dựa trên nội dung text
+    unique_candidates = {}
+    for cand in all_candidates:
+        if cand["text"] not in unique_candidates:
+            unique_candidates[cand["text"]] = cand
+        else:
+            # Giữ lại candidate có score cao nhất nếu trùng
+            if cand.get("score", 0) > unique_candidates[cand["text"]].get("score", 0):
+                unique_candidates[cand["text"]] = cand
+    
+    candidates = list(unique_candidates.values())
+
+    # Sort lại toàn bộ sau khi merge từ nhiều queries
+    candidates = sorted(candidates, key=lambda x: x.get("score", 0), reverse=True)
 
     if verbose:
         print(f"\n[RAG] Query: {query}")
-        print(f"[RAG] Retrieved {len(candidates)} candidates (mode={retrieval_mode})")
+        print(f"[RAG] Retrieved {len(candidates)} candidates")
         for i, c in enumerate(candidates[:3]):
             print(f"  [{i+1}] score={c.get('score', 0):.3f} | {c['metadata'].get('source', '?')}")
 
@@ -505,9 +610,9 @@ if __name__ == "__main__":
             print(f"Lỗi: {e}")
 
     # Uncomment sau khi Sprint 3 hoàn thành:
-    # print("\n--- Sprint 3: So sánh strategies ---")
-    # compare_retrieval_strategies("Approval Matrix để cấp quyền là tài liệu nào?")
-    # compare_retrieval_strategies("ERR-403-AUTH")
+    print("\n--- Sprint 3: So sánh strategies ---")
+    compare_retrieval_strategies("Approval Matrix để cấp quyền là tài liệu nào?")
+    compare_retrieval_strategies("ERR-403-AUTH")
 
     print("\n\nViệc cần làm Sprint 2:")
     print("  1. Implement retrieve_dense() — query ChromaDB")

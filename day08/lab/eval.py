@@ -44,14 +44,14 @@ BASELINE_CONFIG = {
     "label": "baseline_dense",
 }
 
-# Cấu hình variant (Sprint 3 — điều chỉnh theo lựa chọn của nhóm)
-# TODO Sprint 4: Cập nhật VARIANT_CONFIG theo variant nhóm đã implement
+# Cấu hình variant (Sprint 3 — sử dụng Auto Query Transform + Jina Rerank)
 VARIANT_CONFIG = {
-    "retrieval_mode": "hybrid",   # Hoặc "dense" nếu chỉ đổi rerank
+    "retrieval_mode": "hybrid",
     "top_k_search": 10,
     "top_k_select": 3,
-    "use_rerank": True,           # Hoặc False nếu variant là hybrid không rerank
-    "label": "variant_hybrid_rerank",
+    "use_rerank": True,
+    "query_transform": "auto",
+    "label": "variant_hybrid_rerank_auto",
 }
 
 
@@ -70,9 +70,14 @@ def _call_eval_llm(prompt: str) -> Dict[str, Any]:
     try:
         if provider == "openai":
             from openai import OpenAI
-            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            api_key = os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                return {"score": 1, "reason": "ERROR: Missing OPENAI_API_KEY in .env"}
+            
+            client = OpenAI(api_key=api_key)
+            # Ép dùng gpt-4o-mini cho evaluation để có kết quả tốt nhất
             response = client.chat.completions.create(
-                model=model_name,
+                model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0,
                 response_format={"type": "json_object"}
@@ -311,6 +316,7 @@ def run_scorecard(
                 top_k_search=config.get("top_k_search", 10),
                 top_k_select=config.get("top_k_select", 3),
                 use_rerank=config.get("use_rerank", False),
+                query_transform=config.get("query_transform"),
                 verbose=False,
             )
             answer = result["answer"]
