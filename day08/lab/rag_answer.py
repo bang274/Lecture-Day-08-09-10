@@ -184,26 +184,32 @@ def rerank(
 
     Funnel logic (từ slide):
       Search rộng (top-20) → Rerank (top-6) → Select (top-3)
-
-    TODO Sprint 3 (nếu chọn rerank):
-    Option A — Cross-encoder:
-        from sentence_transformers import CrossEncoder
-        model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-        pairs = [[query, chunk["text"]] for chunk in candidates]
-        scores = model.predict(pairs)
-        ranked = sorted(zip(candidates, scores), key=lambda x: x[1], reverse=True)
-        return [chunk for chunk, _ in ranked[:top_k]]
-
-    Option B — Rerank bằng LLM (đơn giản hơn nhưng tốn token):
-        Gửi list chunks cho LLM, yêu cầu chọn top_k relevant nhất
-
-    Khi nào dùng rerank:
-    - Dense/hybrid trả về nhiều chunk nhưng có noise
-    - Muốn chắc chắn chỉ 3-5 chunk tốt nhất vào prompt
     """
-    # TODO Sprint 3: Implement rerank
-    # Tạm thời trả về top_k đầu tiên (không rerank)
-    return candidates[:top_k]
+    if not candidates:
+        return []
+
+    from sentence_transformers import CrossEncoder
+    
+    # 1. Load model CrossEncoder
+    # ms-marco-MiniLM-L-6-v2 là model phổ biến, nhẹ. 
+    # Nếu cần hỗ trợ tiếng Việt tốt hơn, có thể thử các model multilingual khác.
+    model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+    
+    # 2. Chuẩn bị cặp [query, text] để đưa vào model
+    pairs = [[query, chunk["text"]] for chunk in candidates]
+    
+    # 3. Dự đoán điểm số relevance
+    scores = model.predict(pairs)
+    
+    # 4. Sắp xếp lại candidates dựa trên score
+    ranked = sorted(zip(candidates, scores), key=lambda x: x[1], reverse=True)
+    
+    # 5. Cập nhật score mới vào metadata (optional nhưng tốt để debug)
+    for chunk, score in ranked:
+        chunk["rerank_score"] = float(score)
+
+    # 6. Trả về top_k
+    return [chunk for chunk, _ in ranked[:top_k]]
 
 
 # =============================================================================
