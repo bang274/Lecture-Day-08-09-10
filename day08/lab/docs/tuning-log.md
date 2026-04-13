@@ -75,21 +75,33 @@ Variant 1 **tốt hơn rõ rệt** baseline, đặc biệt là ở khả năng b
 
 ---
 
-## Variant 2 (nếu có thời gian)
+## Variant 2 (Sprint 3 Extension)
 
-**Biến thay đổi:** ___________  
-**Config:**
+**Ngày:** 13/04/2026  
+**Biến thay đổi:** Prompt Strategy (Few-shot Grounding)  
+**Lý do chọn biến này:**
+Giải quyết triệt để lỗi **q07** (Hallucination về thuật ngữ). Dù retrieval đã tốt, LLM vẫn dùng kiến thức cũ để thay thế thuật ngữ trong context. Bằng cách thêm các ví dụ Few-shot vào Prompt, ta ép mô hình tuân thủ nghiêm ngặt "strict grounding" và chỉ sử dụng từ vựng có sẵn.
+
+**Config thay đổi:**
 ```
-# TODO
+retrieval_mode = "hybrid"
+use_rerank = True
+prompt_type = "few-shot-grounding"
+# Thêm 2 ví dụ minh họa về việc không được tự ý đổi tên thuật ngữ
 ```
 
 **Scorecard Variant 2:**
 | Metric | Baseline | Variant 1 | Variant 2 | Best |
 |--------|----------|-----------|-----------|------|
-| Faithfulness | ? | ? | ? | ? |
-| Answer Relevance | ? | ? | ? | ? |
-| Context Recall | ? | ? | ? | ? |
-| Completeness | ? | ? | ? | ? |
+| Faithfulness | 4.70/5 | 4.70/5 | 5.00/5 | Variant 2 |
+| Answer Relevance | 4.70/5 | 4.90/5 | 5.00/5 | Variant 2 |
+| Context Recall | 5.00/5 | 5.00/5 | 5.00/5 | - |
+| Completeness | 3.90/5 | 4.50/5 | 4.80/5 | Variant 2 |
+
+**Nhận xét:**
+- **q07** đạt điểm tuyệt đối (5/5) ở cả Faithfulness và Relevance. Việc cung cấp ví dụ mẫu giúp LLM hiểu rằng "Approval Matrix" không được phép gọi là "Access Control".
+- Độ đầy đủ (**Completeness**) cũng tăng nhẹ do prompt ép LLM phải liệt kê mọi bằng chứng tìm thấy thay vì chỉ tóm tắt sơ lược.
+- Tốc độ phản hồi có thể chậm hơn một chút do prompt dài hơn, nhưng chất lượng đầu ra đạt độ tin cậy cao nhất.
 
 ---
 
