@@ -19,6 +19,7 @@ venv.bak/
 chroma_db/
 *.swp
 *~
+artifacts/
 
 # Grading questions — không public trước 17:00
 day08/lab/data/grading_questions.json
