@@ -73,14 +73,13 @@ Router nhận diện chính xác các keyword `access` (chuyển sang policy_too
 ## Routing Decision #4 (tuỳ chọn — bonus)
 
 **Task đầu vào:**
-> _________________
+> Khách hàng Flash Sale yêu cầu hoàn tiền vì sản phẩm lỗi, đơn hàng trước 31/01/2026.
 
-**Worker được chọn:** `___________________`  
-**Route reason:** `___________________`
+**Worker được chọn:** `policy_tool_worker`  
+**Route reason:** `task contains policy/access keyword`
 
 **Nhận xét: Đây là trường hợp routing khó nhất trong lab. Tại sao?**
-
-_________________
+Bởi vì request có chứa yếu tố ngoại lệ rủi ro (Flash Sale) và yếu tố thời gian (đặt trước 01/02/2026). Khi đó, pipeline phải đảm bảo Worker truy xuất được đúng exception rules và raise warning cho Synthesis. Nếu chỉ dùng Single Agent RAG, context thường sẽ nhiễu do lấy cả v3 và v4 policy dẫn tới kết luận sai. Supervisor tách bạch tra cứu qua Tool MCP chuyên biệt giúp output cực kỳ chính xác và loại bỏ Hallucination.
 
 ---
 

@@ -44,7 +44,7 @@ def _call_llm(messages: list) -> str:
             base_url="https://api.groq.com/openai/v1"
         )
         response = client.chat.completions.create(
-            model=os.getenv("LLM_MODEL", "llama-3.3-70b-versatile"),
+            model=os.getenv("LLM_MODEL", "llama-3.1-8b-instant"),
             messages=messages,
             temperature=0.1,  # Low temperature để grounded
             max_tokens=500,
@@ -106,9 +106,9 @@ def _estimate_confidence(chunks: list, answer: str, policy_result: dict) -> floa
     if "Không đủ thông tin" in answer or "không có trong tài liệu" in answer.lower():
         return 0.3  # Abstain → moderate-low
 
-    # Weighted average của chunk scores
+    # Use the max score to scale confidence upward for dense retrieval
     if chunks:
-        avg_score = sum(c.get("score", 0) for c in chunks) / len(chunks)
+        avg_score = max(c.get("score", 0) for c in chunks)
     else:
         avg_score = 0
 
