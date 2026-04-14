@@ -36,12 +36,15 @@ def _call_llm(messages: list) -> str:
     Gọi LLM để tổng hợp câu trả lời.
     TODO Sprint 2: Implement với OpenAI hoặc Gemini.
     """
-    # Option A: OpenAI
+    # Groq API via OpenAI package
     try:
         from openai import OpenAI
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        client = OpenAI(
+            api_key=os.getenv("GROQ_API_KEY"),
+            base_url="https://api.groq.com/openai/v1"
+        )
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=os.getenv("LLM_MODEL", "llama-3.3-70b-versatile"),
             messages=messages,
             temperature=0.1,  # Low temperature để grounded
             max_tokens=500,
