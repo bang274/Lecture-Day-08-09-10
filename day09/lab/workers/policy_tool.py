@@ -38,9 +38,17 @@ def _call_mcp_tool(tool_name: str, tool_input: dict) -> dict:
     from datetime import datetime
 
     try:
-        # TODO Sprint 3: Thay bằng real MCP client nếu dùng HTTP server
-        from mcp_server import dispatch_tool
-        result = dispatch_tool(tool_name, tool_input)
+        import requests
+        try:
+            # Thử gọi API tới Advanced MCP Server (FastAPI)
+            resp = requests.post("http://localhost:8000/call", json={"tool_name": tool_name, "tool_input": tool_input}, timeout=2.0)
+            resp.raise_for_status()
+            result = resp.json()
+        except requests.exceptions.RequestException:
+            # Fallback nếu server không hoạt động
+            from mcp_server import dispatch_tool
+            result = dispatch_tool(tool_name, tool_input)
+
         return {
             "tool": tool_name,
             "input": tool_input,

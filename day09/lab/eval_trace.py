@@ -221,6 +221,7 @@ def analyze_traces(traces_dir: str = "artifacts/traces") -> dict:
     metrics = {
         "total_traces": total,
         "routing_distribution": {k: f"{v}/{total} ({100*v//total}%)" for k, v in routing_counts.items()},
+        "confidences": confidences,
         "avg_confidence": round(sum(confidences) / len(confidences), 3) if confidences else 0,
         "avg_latency_ms": round(sum(latencies) / len(latencies)) if latencies else 0,
         "mcp_usage_rate": f"{mcp_calls}/{total} ({100*mcp_calls//total}%)" if total else "0%",
