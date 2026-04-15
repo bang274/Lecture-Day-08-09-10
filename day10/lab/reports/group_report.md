@@ -19,10 +19,10 @@ raw CSV → load_raw_csv → clean_rows (10 rules) → run_expectations (9 check
 
 **Lệnh chạy một dòng:**
 ```bash
-python etl_pipeline.py run --run-id clean-run-002
+python etl_pipeline.py run --run-id final-run
 ```
 
-**Run-id trong log:** `clean-run-002` → file log `artifacts/logs/run_clean-run-002.log` ghi đầy đủ `raw_records=10`, `cleaned_records=6`, `quarantine_records=4`, và kết quả 9 expectations.
+**Run-id trong log:** `final-run` → file log `artifacts/logs/run_final-run.log` ghi đầy đủ `raw_records=10`, `cleaned_records=6`, `quarantine_records=4`, và kết quả 9 expectations.
 
 ---
 
@@ -32,7 +32,7 @@ python etl_pipeline.py run --run-id clean-run-002
 
 | Rule / Expectation mới (tên ngắn) | Trước (số liệu) | Sau / khi inject (số liệu) | Chứng cứ (log / CSV / commit) |
 |-----------------------------------|------------------|-----------------------------|-------------------------------|
-| R7: Quarantine PII (email/phone) | 0 rows bị quarantine | Khi thêm row có email → quarantine_records+1 | `artifacts/quarantine/quarantine_clean-run-002.csv` |
+| R7: Quarantine PII (email/phone) | 0 rows bị quarantine | Khi thêm row có email → quarantine_records+1 | `artifacts/quarantine/quarantine_final-run.csv` |
 | R8: Normalize whitespace | chunk_text giữ nguyên | Whitespace ≥3 spaces → chuẩn hóa, dedup hoạt động chính xác hơn | `_normalize_whitespace()` trong `cleaning_rules.py` |
 | R9: Validate exported_at | ISO sẵn | DD/MM/YYYY format → normalize ISO, hỗ trợ freshness | `_normalize_exported_at()` |
 | R10: Quarantine chunk>2000 chars | 0 rows | Khi thêm chunk dài → quarantine_records+1 | `chunk_too_long` reason trong quarantine CSV |
@@ -53,24 +53,24 @@ Inject-bad run (`--no-refund-fix --skip-validate`): `expectation[refund_no_stale
 
 ## 3. Before / after ảnh hưởng retrieval hoặc agent
 
-**Kịch bản inject:** Chạy `python etl_pipeline.py run --run-id inject-bad --no-refund-fix --skip-validate` — cố ý không fix refund window, bỏ qua expectation halt để embed chunk stale "14 ngày làm việc".
+**Kịch bản inject:** Chạy `python etl_pipeline.py run --run-id inject-bad-final --no-refund-fix --skip-validate` — cố ý không fix refund window, bỏ qua expectation halt để embed chunk stale "14 ngày làm việc".
 
 **Kết quả định lượng (từ grading JSONL):**
 
 | Câu | contains_expected | hits_forbidden | top1_doc_matches |
 |-----|-------------------|----------------|-----------------|
-| gq_d10_01 (refund) | ✅ true | ✅ false | N/A |
-| gq_d10_02 (SLA) | ✅ true | ✅ false | N/A |
-| gq_d10_03 (HR leave) | ✅ true | ✅ false | ✅ true |
+| gq_d10_01 (refund: 7 ngày) | ✅ true | ✅ false | N/A |
+| gq_d10_02 (SLA: 4h resolution) | ✅ true | ✅ false | N/A |
+| gq_d10_03 (HR leave: 12 ngày) | ✅ true | ✅ false | ✅ true |
 
-**Trước (inject-bad):** Chunk stale "14 ngày làm việc" còn trong index → eval `q_refund_window` có `hits_forbidden=yes` (top-k chứa forbidden text).
+**Trước (inject-bad-final):** Chunk stale "14 ngày làm việc" còn trong index → eval `q_refund_window` có `hits_forbidden=yes` (top-k chứa forbidden text).
 
-**Sau (clean-run-002):** Refund đã fix thành "7 ngày làm việc" → `hits_forbidden=no`, `contains_expected=yes`. HR leave policy đúng version 2026 (12 ngày) → `top1_doc_expected=yes`.
+**Sau (final-run):** Refund đã fix thành "7 ngày làm việc" → `hits_forbidden=no`, `contains_expected=yes`. HR leave policy đúng version 2026 (12 ngày) → `top1_doc_expected=yes`. SLA P1 resolution 4 giờ được retrieve đúng.
 
 **Evidence files:**
-- `artifacts/eval/before_after_eval.csv` — 4 golden questions, tất cả PASS
-- `artifacts/eval/grading_run.jsonl` — 3 grading questions, tất cả đúng criteria
-- `artifacts/logs/run_inject-bad.log` — expectation FAIL + embed prune (1 stale vector removed)
+- `artifacts/eval/final_eval.csv` — 4 golden questions, tất cả PASS
+- `artifacts/eval/final_grading.jsonl` — 3 grading questions, tất cả đúng criteria
+- `artifacts/logs/run_inject-bad-final.log` — expectation FAIL + embed prune (1 stale vector removed)
 
 ---
 
@@ -78,7 +78,7 @@ Inject-bad run (`--no-refund-fix --skip-validate`): `expectation[refund_no_stale
 
 **SLA chọn:** `FRESHNESS_SLA_HOURS=24` — dữ liệu phải được export trong vòng 24h.
 
-**Kết quả:** `freshness_check=FAIL` (age=116.7h) — hợp lý vì CSV mẫu có `exported_at=2026-04-10`. Đây là **tính năng** của lab: dạy sinh viên nhận diện stale data trước khi debug model/prompt.
+**Kết quả:** `freshness_check=FAIL` (age=122.2h) — hợp lý vì CSV mẫu có `exported_at=2026-04-10`. Đây là **tính năng** của lab: dạy sinh viên nhận diện stale data trước khi debug model/prompt.
 
 **Trong production:** Tôi sẽ (1) tăng `FRESHNESS_SLA_HOURS` cho phù hợp tần suất sync thực tế, hoặc (2) trigger export mới, và (3) ghi trong runbook: SLA đo tại "publish boundary" (sau embed) chứ không phải "ingest start".
 
