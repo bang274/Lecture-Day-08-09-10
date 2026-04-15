@@ -1,27 +1,19 @@
-# Báo Cáo Nhóm — Lab Day 10: Data Pipeline & Data Observability
+# Báo Cáo Lab Day 10: Data Pipeline & Data Observability
 
-**Tên nhóm:** Team Alpha
-**Thành viên:**
-| Tên | Vai trò (Day 10) | Email |
-|-----|------------------|-------|
-| Member 1 | Ingestion / Raw Owner | member1@email.com |
-| Member 2 | Cleaning & Quality Owner | member2@email.com |
-| Member 3 | Embed & Idempotency Owner | member3@email.com |
-| Member 4 | Monitoring / Docs Owner | member4@email.com |
-
+**Sinh viên:** Tran Khanh Bang
+**Mã số:** AI20K-274
 **Ngày nộp:** 2026-04-15
 **Repo:** Obsidian/Lecture-Day-08-09-10/day10/lab/
-**Độ dài khuyến nghị:** 600–1000 từ
 
 ---
 
-## 1. Pipeline tổng quan (150–200 từ)
+## 1. Pipeline tổng quan
 
 Nguồn raw là CSV export mẫu `data/raw/policy_export_dirty.csv` mô phỏng dữ liệu từ policy DB — gồm 10 rows có duplicate, missing date, stale HR version, unknown doc_id, và refund window sai (14→7 ngày).
 
 **Tóm tắt luồng:**
 ```
-raw CSV → load_raw_csv → clean_rows (10 rules) → run_expectations (9 checks) 
+raw CSV → load_raw_csv → clean_rows (10 rules) → run_expectations (9 checks)
   → embed ChromaDB (upsert + prune) → manifest.json → freshness_check
 ```
 
@@ -34,7 +26,7 @@ python etl_pipeline.py run --run-id clean-run-002
 
 ---
 
-## 2. Cleaning & expectation (150–200 từ)
+## 2. Cleaning & expectation
 
 ### 2a. Bảng metric_impact (bắt buộc — chống trivial)
 
@@ -59,7 +51,7 @@ Inject-bad run (`--no-refund-fix --skip-validate`): `expectation[refund_no_stale
 
 ---
 
-## 3. Before / after ảnh hưởng retrieval hoặc agent (200–250 từ)
+## 3. Before / after ảnh hưởng retrieval hoặc agent
 
 **Kịch bản inject:** Chạy `python etl_pipeline.py run --run-id inject-bad --no-refund-fix --skip-validate` — cố ý không fix refund window, bỏ qua expectation halt để embed chunk stale "14 ngày làm việc".
 
@@ -82,17 +74,17 @@ Inject-bad run (`--no-refund-fix --skip-validate`): `expectation[refund_no_stale
 
 ---
 
-## 4. Freshness & monitoring (100–150 từ)
+## 4. Freshness & monitoring
 
 **SLA chọn:** `FRESHNESS_SLA_HOURS=24` — dữ liệu phải được export trong vòng 24h.
 
 **Kết quả:** `freshness_check=FAIL` (age=116.7h) — hợp lý vì CSV mẫu có `exported_at=2026-04-10`. Đây là **tính năng** của lab: dạy sinh viên nhận diện stale data trước khi debug model/prompt.
 
-**Trong production:** Nhóm sẽ (1) tăng `FRESHNESS_SLA_HOURS` cho phù hợp tần suất sync thực tế, hoặc (2) trigger export mới, và (3) ghi trong runbook: SLA đo tại "publish boundary" (sau embed) chứ không phải "ingest start".
+**Trong production:** Tôi sẽ (1) tăng `FRESHNESS_SLA_HOURS` cho phù hợp tần suất sync thực tế, hoặc (2) trigger export mới, và (3) ghi trong runbook: SLA đo tại "publish boundary" (sau embed) chứ không phải "ingest start".
 
 ---
 
-## 5. Liên hệ Day 09 (50–100 từ)
+## 5. Liên hệ Day 09
 
 Pipeline Day 10 cung cấp corpus đã qua quality gate cho multi-agent Day 09. Collection `day10_kb` có thể thay thế hoặc bổ sung cho retrieval worker trong supervisor-Workers architecture. Khi policy thay đổi, chỉ cần rerun `etl_pipeline.py run` → index tự động cập nhật (idempotent upsert + prune), đảm bảo Day 09 agent luôn retrieval trên dữ liệu đúng version.
 
