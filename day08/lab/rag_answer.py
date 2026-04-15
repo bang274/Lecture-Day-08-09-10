@@ -191,36 +191,31 @@ def rerank(
     top_k: int = TOP_K_SELECT,
 ) -> List[Dict[str, Any]]:
     """
-    Rerank các candidate chunks bằng cross-encoder.
-
-    Cross-encoder: chấm lại "chunk nào thực sự trả lời câu hỏi này?"
-    MMR (Maximal Marginal Relevance): giữ relevance nhưng giảm trùng lặp
-
-    Funnel logic (từ slide):
-      Search rộng (top-20) → Rerank (top-6) → Select (top-3)
+    Sử dụng Jina Reranker v3 để sắp xếp lại các kết quả.
     """
+    import requests
+    
     if not candidates:
         return []
 
-    from sentence_transformers import CrossEncoder
+    api_key = os.getenv("JINA_API_KEY")
+    if not api_key:
+        print("[Warning] Missing JINA_API_KEY. Skipping rerank.")
+        return candidates[:top_k]
+
+    url = "https://api.jina.ai/v1/rerank"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
+    }
     
-    # 1. Load model CrossEncoder
-    # ms-marco-MiniLM-L-6-v2 là model phổ biến, nhẹ. 
-    # Nếu cần hỗ trợ tiếng Việt tốt hơn, có thể thử các model multilingual khác.
-    model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-    
-    # 2. Chuẩn bị cặp [query, text] để đưa vào model
-    pairs = [[query, chunk["text"]] for chunk in candidates]
-    
-    # 3. Dự đoán điểm số relevance
-    scores = model.predict(pairs)
-    
-    # 4. Sắp xếp lại candidates dựa trên score
-    ranked = sorted(zip(candidates, scores), key=lambda x: x[1], reverse=True)
-    
-    # 5. Cập nhật score mới vào metadata (optional nhưng tốt để debug)
-    for chunk, score in ranked:
-        chunk["rerank_score"] = float(score)
+    docs = [c["text"] for c in candidates]
+    data = {
+        "model": "jina-reranker-v3",
+        "query": query,
+        "documents": docs,
+        "top_n": top_k
+    }
 
     response = requests.post(url, headers=headers, json=data)
     if response.status_code == 200:
