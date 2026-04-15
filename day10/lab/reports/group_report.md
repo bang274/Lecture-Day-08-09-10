@@ -1,99 +1,100 @@
-# Báo Cáo Lab Day 10: Data Pipeline & Data Observability
+# Báo Cáo Nhóm — Lab Day 10: Data Pipeline & Data Observability
 
-**Sinh viên:** Tran Khanh Bang
-**Mã số:** AI20K-274
-**Ngày nộp:** 2026-04-15
-**Repo:** Obsidian/Lecture-Day-08-09-10/day10/lab/
+**Tên nhóm:** Nguyễn Đức Cường, Trần Khánh Bằng, Đỗ Hải Nam
+**Thành viên:** Nguyễn Đức Cường, Trần Khánh Bằng, Đỗ Hải Nam
+| Tên | Vai trò (Day 10) | Email |
+|-----|------------------|-------|
+| Trần Khánh Bằng | Ingestion / Raw Owner | khanhbangvt123@gmail.com |
+| Nguyễn Đưc Cường | Cleaning & Quality Owner | cuong111103hd@gmail.com |
+| Đỗ Hải Nam | Embed & Idempotency Owner | nam.dh200418@gmail.com |
+| AI Engineer | Monitoring / Docs Owner |  |
+
+**Ngày nộp:** 2026-04-15  
+**Repo:** VinUni-AI20k/Lecture-Day-08-09-10  
 
 ---
 
 ## 1. Pipeline tổng quan
 
-Nguồn raw là CSV export mẫu `data/raw/policy_export_dirty.csv` mô phỏng dữ liệu từ policy DB — gồm 10 rows có duplicate, missing date, stale HR version, unknown doc_id, và refund window sai (14→7 ngày).
-
-**Tóm tắt luồng:**
-```
-raw CSV → load_raw_csv → clean_rows (10 rules) → run_expectations (9 checks)
-  → embed ChromaDB (upsert + prune) → manifest.json → freshness_check
-```
+Nguồn raw là file `policy_export_dirty.csv` mô phỏng export từ hệ thống CRM/Policy Management. 
+Hệ thống xử lý qua các bước: Ingest -> Clean (fix logic & format) -> Validate (check expectations) -> Embed (upsert into ChromaDB) -> Monitor (freshness check).
 
 **Lệnh chạy một dòng:**
 ```bash
-python etl_pipeline.py run --run-id final-run
+python etl_pipeline.py run --run-id sprint4_final
 ```
-
-**Run-id trong log:** `final-run` → file log `artifacts/logs/run_final-run.log` ghi đầy đủ `raw_records=10`, `cleaned_records=6`, `quarantine_records=4`, và kết quả 9 expectations.
+`run_id` được lưu trong tên file log, manifest và cả trong metadata của vector store để truy xuất nguồn gốc (Lineage).
 
 ---
 
 ## 2. Cleaning & expectation
 
-### 2a. Bảng metric_impact (bắt buộc — chống trivial)
+Nhóm đã thêm **3 rule mới** và **2 expectation mới** vào hệ thống.
 
-| Rule / Expectation mới (tên ngắn) | Trước (số liệu) | Sau / khi inject (số liệu) | Chứng cứ (log / CSV / commit) |
-|-----------------------------------|------------------|-----------------------------|-------------------------------|
-| R7: Quarantine PII (email/phone) | 0 rows bị quarantine | Khi thêm row có email → quarantine_records+1 | `artifacts/quarantine/quarantine_final-run.csv` |
-| R8: Normalize whitespace | chunk_text giữ nguyên | Whitespace ≥3 spaces → chuẩn hóa, dedup hoạt động chính xác hơn | `_normalize_whitespace()` trong `cleaning_rules.py` |
-| R9: Validate exported_at | ISO sẵn | DD/MM/YYYY format → normalize ISO, hỗ trợ freshness | `_normalize_exported_at()` |
-| R10: Quarantine chunk>2000 chars | 0 rows | Khi thêm chunk dài → quarantine_records+1 | `chunk_too_long` reason trong quarantine CSV |
-| E7: exported_at_present | PASS (0 missing) | Nếu xóa exported_at → `missing_exported_at=N`, warn | Log: `expectation[exported_at_present]` |
-| E8: chunk_id_unique | PASS (0 duplicate) | Nếu duplicate → halt pipeline | Log: `expectation[chunk_id_unique]` |
-| E9: doc_id_distribution_balanced | PASS (33.33% top ratio) | Nếu 1 doc chiếm >80% → warn | Log: `expectation[doc_id_distribution_balanced]` |
+### 2a. Bảng metric_impact
 
-**Rule chính (baseline + mở rộng):**
+| Rule / Expectation mới | Trước (sprint1) | Sau / khi inject v2 | Chứng cứ |
+|-------------------------|------------------|-----------------------------|-------------------------------|
+| `pii_detected_email` | 0 | 1 record bị quarantine | artifacts/quarantine/quarantine_sprint2_v2.csv |
+| `too_short_chunk` (<3 words) | 0 | 1 record bị quarantine | artifacts/quarantine/quarantine_sprint2_v2.csv |
+| `SLA_P_Normalization` | p1 (lowercase) | P1 (uppercase) | `grep "P1" artifacts/cleaned/...` |
+| `no_pii_emails` (Halt) | Pass | Pass | Pipeline log |
+| `min_word_count_3` (Warn) | Pass | Pass | Pipeline log |
 
-- Baseline (6): allowlist doc_id, normalize date, quarantine stale HR, quarantine empty text, dedup, fix refund 14→7
-- Mới thêm (4): PII quarantine, whitespace normalize, exported_at validate, chunk length cap
-
-**Ví dụ 1 lần expectation fail và cách xử lý:**
-
-Inject-bad run (`--no-refund-fix --skip-validate`): `expectation[refund_no_stale_14d_window] FAIL (halt) :: violations=1`. Pipeline trả về exit code 0 do `--skip-validate` nhưng log ghi `WARN: expectation failed but --skip-validate → tiếp tục embed`. Eval retrieval sau đó cho `hits_forbidden=yes` trên `q_refund_window` — chứng minh dữ liệu xấu ảnh hưởng retrieval.
+**Rule chính:**
+- Loại bỏ PII (Email) để tránh rò rỉ thông tin cá nhân vào vector store.
+- Chuẩn hóa SLA (p1 -> P1) để đồng nhất câu trả lời cho Agent.
+- Loại bỏ các chunk quá ngắn (< 3 từ) không có giá trị thông tin.
 
 ---
 
-## 3. Before / after ảnh hưởng retrieval hoặc agent
+## 3. Before / after ảnh hưởng retrieval
 
-**Kịch bản inject:** Chạy `python etl_pipeline.py run --run-id inject-bad-final --no-refund-fix --skip-validate` — cố ý không fix refund window, bỏ qua expectation halt để embed chunk stale "14 ngày làm việc".
+**Kịch bản inject:**
+Nhóm chạy pipeline với `--no-refund-fix` để giữ lại thông tin sai "14 ngày hoàn tiền" và đẩy vào vector store.
 
-**Kết quả định lượng (từ grading JSONL):**
-
-| Câu | contains_expected | hits_forbidden | top1_doc_matches |
-|-----|-------------------|----------------|-----------------|
-| gq_d10_01 (refund: 7 ngày) | ✅ true | ✅ false | N/A |
-| gq_d10_02 (SLA: 4h resolution) | ✅ true | ✅ false | N/A |
-| gq_d10_03 (HR leave: 12 ngày) | ✅ true | ✅ false | ✅ true |
-
-**Trước (inject-bad-final):** Chunk stale "14 ngày làm việc" còn trong index → eval `q_refund_window` có `hits_forbidden=yes` (top-k chứa forbidden text).
-
-**Sau (final-run):** Refund đã fix thành "7 ngày làm việc" → `hits_forbidden=no`, `contains_expected=yes`. HR leave policy đúng version 2026 (12 ngày) → `top1_doc_expected=yes`. SLA P1 resolution 4 giờ được retrieve đúng.
-
-**Evidence files:**
-- `artifacts/eval/final_eval.csv` — 4 golden questions, tất cả PASS
-- `artifacts/eval/final_grading.jsonl` — 3 grading questions, tất cả đúng criteria
-- `artifacts/logs/run_inject-bad-final.log` — expectation FAIL + embed prune (1 stale vector removed)
+**Kết quả định lượng:**
+- **Good State**: `hits_forbidden=no` cho câu hỏi hoàn tiền. Người dùng nhận thông tin 7 ngày.
+- **Bad State**: `hits_forbidden=yes`. Query trả về chunk chứa "14 ngày làm việc" (stale), có thể gây ra hallucination cho Agent.
+Bằng chứng nằm ở:
+- `artifacts/eval/before_after_eval_good.csv`
+- `artifacts/eval/before_after_eval_bad.csv`
+- Re-run validation: `artifacts/eval/before_after_eval_good_check.csv`, `artifacts/eval/before_after_eval_bad_check.csv`
 
 ---
 
 ## 4. Freshness & monitoring
 
-**SLA chọn:** `FRESHNESS_SLA_HOURS=24` — dữ liệu phải được export trong vòng 24h.
+Nhóm chọn SLA Freshness là **24 giờ**. Kết quả hiện tại là **FAIL** vì dữ liệu mẫu có `exported_at` từ ngày 2026-04-10, vượt quá ngưỡng cho phép. Trong thực tế, điều này sẽ kích hoạt cảnh báo để kỹ sư kiểm tra hệ thống export.
 
-**Kết quả:** `freshness_check=FAIL` (age=122.2h) — hợp lý vì CSV mẫu có `exported_at=2026-04-10`. Đây là **tính năng** của lab: dạy sinh viên nhận diện stale data trước khi debug model/prompt.
+**Lưu ý vận hành:** Freshness FAIL ở đây là hành vi mong đợi trên data mẫu stale của lab, không phải lỗi code pipeline.
 
-**Trong production:** Tôi sẽ (1) tăng `FRESHNESS_SLA_HOURS` cho phù hợp tần suất sync thực tế, hoặc (2) trigger export mới, và (3) ghi trong runbook: SLA đo tại "publish boundary" (sau embed) chứ không phải "ingest start".
+---
+
+## 4.1. Test execution evidence (math_agent)
+
+Nhóm đã tái chạy full test commands trong môi trường Anaconda `math_agent`:
+
+- `python etl_pipeline.py run --run-id good_state_check` -> pass (`PIPELINE_OK`)
+- `python etl_pipeline.py run --run-id inject_bad_check --no-refund-fix --skip-validate` -> pass có chủ đích, expectation refund fail và vẫn publish do skip validate
+- `python eval_retrieval.py --out ...good_check.csv` và `...bad_check.csv` -> tạo thành công file so sánh
+- `python etl_pipeline.py freshness --manifest artifacts/manifests/manifest_good_state_check.json` -> FAIL đúng kỳ vọng do stale timestamp
+
+**Điểm chặn hiện tại:** `grading_run.py` chưa chạy được vì thiếu file `data/grading_questions.json` trong repo tại thời điểm test. 
+Khi giảng viên public file này, nhóm chỉ cần chạy lại:
+`python grading_run.py --out artifacts/eval/grading_run.jsonl`
+và
+`python instructor_quick_check.py --grading artifacts/eval/grading_run.jsonl`.
 
 ---
 
 ## 5. Liên hệ Day 09
 
-Pipeline Day 10 cung cấp corpus đã qua quality gate cho multi-agent Day 09. Collection `day10_kb` có thể thay thế hoặc bổ sung cho retrieval worker trong supervisor-Workers architecture. Khi policy thay đổi, chỉ cần rerun `etl_pipeline.py run` → index tự động cập nhật (idempotent upsert + prune), đảm bảo Day 09 agent luôn retrieval trên dữ liệu đúng version.
+Dữ liệu sau khi embed vào collection `day10_kb` sẽ được Agent ở Day 09 sử dụng. Việc làm sạch ở tầng Data Pipeline giúp Agent không cần xử lý các trường hợp format ngày lỗi hay thông tin stale, từ đó phản hồi chính xác và chuyên nghiệp hơn.
 
 ---
 
 ## 6. Rủi ro còn lại & việc chưa làm
 
-- Chưa đo freshness ở 2 boundary (ingest + publish) — bonus +1
-- Chưa tích hợp Great Expectations library — bonus +2
-- Eval retrieval chỉ dùng keyword, chưa có LLM-judge
-- Chưa test với API ingestion thật (chỉ mock CSV)
-- Chưa có queue/backpressure/DLQ implementation (chỉ mô tả trong architecture doc)
+- Cần thêm các rule kiểm tra mâu thuẫn semantic (ví dụ: một policy nói A, policy khác nói B cùng thời điểm).
+- Chưa có dashboard visual cho số liệu quality hàng ngày.
