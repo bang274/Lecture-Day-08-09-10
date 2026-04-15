@@ -62,6 +62,42 @@ def load_raw_csv(path: Path) -> List[Dict[str, str]]:
     return rows
 
 
+def _normalize_exported_at(raw: str) -> Tuple[str, str]:
+    """
+    Normalize exported_at to ISO 8601 format.
+    Returns (iso_date, error_reason). Empty string if unparseable.
+    """
+    s = (raw or "").strip()
+    if not s:
+        return "", "empty_exported_at"
+    # Already ISO-like
+    if re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", s):
+        return s, ""
+    # Try DD/MM/YYYY HH:MM format
+    m = re.match(r"^(\d{2})/(\d{2})/(\d{4})\s+(.+)$", s)
+    if m:
+        dd, mm, yyyy, time_part = m.group(1), m.group(2), m.group(3), m.group(4)
+        return f"{yyyy}-{mm}-{dd}T{time_part}", ""
+    return "", "invalid_exported_at_format"
+
+
+def _contains_pii(text: str) -> bool:
+    """Check if text potentially contains PII (email, phone, SSN-like patterns)."""
+    t = (text or "").lower()
+    # Email pattern
+    if re.search(r"[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}", t):
+        return True
+    # Vietnam phone pattern
+    if re.search(r"(\+84|0)\d{9,10}", t):
+        return True
+    return False
+
+
+def _normalize_whitespace(text: str) -> str:
+    """Normalize excessive whitespace (≥3 consecutive spaces or tabs) to single space."""
+    return re.sub(r"[ \t]{3,}", " ", text).strip()
+
+
 def clean_rows(
     rows: List[Dict[str, str]],
     *,
@@ -77,6 +113,12 @@ def clean_rows(
     4) Quarantine: chunk_text rỗng hoặc effective_date rỗng sau chuẩn hoá.
     5) Loại trùng nội dung chunk_text (giữ bản đầu).
     6) Fix stale refund: policy_refund_v4 chứa '14 ngày làm việc' → 7 ngày.
+
+    New rules added (Sprint 2 — anti-trivial, each with measurable impact):
+    7) [R7] Quarantine: rows containing PII (email/phone) — protects against data leak.
+    8) [R8] Normalize excessive whitespace in chunk_text — improves embedding quality.
+    9) [R9] Validate & normalize exported_at timestamp — supports freshness tracking.
+    10) [R10] Quarantine: chunk_text too long (>2000 chars) — prevents oversized embedding.
     """
     quarantine: List[Dict[str, Any]] = []
     seen_text: set[str] = set()
@@ -89,10 +131,12 @@ def clean_rows(
         eff_raw = raw.get("effective_date", "")
         exported_at = raw.get("exported_at", "")
 
+        # R1: Allowlist check
         if doc_id not in ALLOWED_DOC_IDS:
             quarantine.append({**raw, "reason": "unknown_doc_id"})
             continue
 
+        # R2: Normalize effective_date
         eff_norm, eff_err = _normalize_effective_date(eff_raw)
         if eff_err == "empty_effective_date":
             quarantine.append({**raw, "reason": "missing_effective_date"})
@@ -101,6 +145,7 @@ def clean_rows(
             quarantine.append({**raw, "reason": eff_err, "effective_date_raw": eff_raw})
             continue
 
+        # R3: Stale HR policy
         if doc_id == "hr_leave_policy" and eff_norm < "2026-01-01":
             quarantine.append(
                 {
@@ -111,16 +156,34 @@ def clean_rows(
             )
             continue
 
+        # R4: Empty chunk text
         if not text:
             quarantine.append({**raw, "reason": "missing_chunk_text"})
             continue
 
+        # R7: PII check — quarantine rows with personal info
+        if _contains_pii(text):
+            quarantine.append({**raw, "reason": "contains_pii"})
+            continue
+
+        # R10: Chunk too long — quarantine oversized chunks
+        if len(text) > 2000:
+            quarantine.append(
+                {**raw, "reason": "chunk_too_long", "chunk_length": len(text)}
+            )
+            continue
+
+        # R8: Normalize whitespace
+        text = _normalize_whitespace(text)
+
+        # R5: Dedup after normalization
         key = _norm_text(text)
         if key in seen_text:
             quarantine.append({**raw, "reason": "duplicate_chunk_text"})
             continue
         seen_text.add(key)
 
+        # R6: Fix stale refund window
         fixed_text = text
         if apply_refund_window_fix and doc_id == "policy_refund_v4":
             if "14 ngày làm việc" in fixed_text:
@@ -130,6 +193,12 @@ def clean_rows(
                 )
                 fixed_text += " [cleaned: stale_refund_window]"
 
+        # R9: Normalize exported_at
+        exp_norm, exp_err = _normalize_exported_at(exported_at)
+        if exp_err:
+            # Don't quarantine, just keep raw value and flag
+            exp_norm = exported_at
+
         seq += 1
         cleaned.append(
             {
@@ -137,7 +206,7 @@ def clean_rows(
                 "doc_id": doc_id,
                 "chunk_text": fixed_text,
                 "effective_date": eff_norm,
-                "exported_at": exported_at or "",
+                "exported_at": exp_norm,
             }
         )
 

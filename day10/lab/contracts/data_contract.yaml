@@ -3,13 +3,13 @@
 
 version: "1.0"
 dataset: "kb_chunk_export"
-owner_team: "__TODO__"
+owner_team: "AI Engineering Team — CS + IT Helpdesk"
 
 schema_cleaned:
   chunk_id:
     type: string
     required: true
-    description: "ID ổn định sau clean (thường hash hoặc doc_id + seq)"
+    description: "ID ổn định sau clean (hash của doc_id + chunk_text + seq)"
   doc_id:
     type: string
     required: true
@@ -19,12 +19,15 @@ schema_cleaned:
     required: true
     constraints:
       min_length: 8
+      max_length: 2000
   effective_date:
     type: date
     required: true
+    format: "YYYY-MM-DD"
   exported_at:
     type: datetime
     required: true
+    format: "ISO 8601"
 
 quality_rules:
   - id: "no_duplicate_chunk_text"
@@ -32,11 +35,20 @@ quality_rules:
   - id: "no_stale_refund_window"
     description: "Không được để chunk policy refund chứa cửa sổ 14 ngày (lệch so với v4 = 7 ngày)"
     severity: "halt"
+  - id: "no_pii_in_chunks"
+    description: "Không được chứa email, số điện thoại trong chunk_text"
+    severity: "halt"
+  - id: "chunk_id_unique"
+    description: "Mỗi chunk_id phải duy nhất để tránh upsert trùng"
+    severity: "halt"
+  - id: "exported_at_present"
+    description: "Mọi row phải có exported_at để đo freshness"
+    severity: "warn"
 
 freshness:
   measured_at: "publish"  # ingest | cleaned | publish
   sla_hours: 24
-  alert_channel: "__TODO__"
+  alert_channel: "#ai-pipeline-alerts"
 
 canonical_sources:
   - path: "data/docs/policy_refund_v4.txt"
@@ -58,3 +70,4 @@ allowed_doc_ids:
 # Merit/Distinction: có thể đưa cutoff versioning vào env và tham chiếu ở đây (tránh hard-code trong code).
 policy_versioning:
   hr_leave_min_effective_date: "2026-01-01"
+  refund_window_days: 7

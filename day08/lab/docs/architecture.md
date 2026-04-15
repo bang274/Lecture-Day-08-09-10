@@ -131,4 +131,3 @@ graph LR
     I --> J[Kimi K2 Instruct]
     J --> K[Answer + Citation]
 ```
-

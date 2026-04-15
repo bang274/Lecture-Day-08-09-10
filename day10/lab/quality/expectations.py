@@ -112,5 +112,54 @@ def run_expectations(cleaned_rows: List[Dict[str, Any]]) -> Tuple[List[Expectati
         )
     )
 
+    # E7 (new): exported_at must be present on all rows — ensures freshness tracking works
+    # Metric impact: if exported_at missing, freshness_check cannot determine data age
+    bad_exported = [
+        r
+        for r in cleaned_rows
+        if not (r.get("exported_at") or "").strip()
+    ]
+    ok7 = len(bad_exported) == 0
+    results.append(
+        ExpectationResult(
+            "exported_at_present",
+            ok7,
+            "warn",
+            f"missing_exported_at={len(bad_exported)}",
+        )
+    )
+
+    # E8 (new): chunk_id must be unique — prevents duplicate vector upserts
+    # Metric impact: duplicate chunk_id causes silent data loss on embed upsert
+    all_ids = [r.get("chunk_id", "") for r in cleaned_rows]
+    unique_ids = set(all_ids)
+    ok8 = len(unique_ids) == len(all_ids)
+    results.append(
+        ExpectationResult(
+            "chunk_id_unique",
+            ok8,
+            "halt",
+            f"duplicate_chunk_ids={len(all_ids) - len(unique_ids)}",
+        )
+    )
+
+    # E9 (new): doc_id distribution — no single doc_id should dominate >80% of cleaned rows
+    # Metric impact: skewed distribution may indicate ingestion filter failure
+    if cleaned_rows:
+        from collections import Counter
+        doc_counts = Counter(r.get("doc_id", "") for r in cleaned_rows)
+        max_count = max(doc_counts.values())
+        max_ratio = max_count / len(cleaned_rows)
+        ok9 = max_ratio <= 0.8
+        top_doc = doc_counts.most_common(1)[0][0] if doc_counts else ""
+        results.append(
+            ExpectationResult(
+                "doc_id_distribution_balanced",
+                ok9,
+                "warn",
+                f"top_doc={top_doc} ratio={max_ratio:.2%} threshold=80%",
+            )
+        )
+
     halt = any(not r.passed and r.severity == "halt" for r in results)
     return results, halt
